@@ -1,5 +1,5 @@
 ---
-title: "Get Started with pyxctsk"
+title: "Quickstart: Parse, Build, and Measure XCTrack Tasks"
 sidebarTitle: "Quickstart"
 description: "Learn how to install pyxctsk, parse an XCTrack task file, build a task from scratch, and report FAI S7F distances in under five minutes."
 ---
@@ -104,7 +104,7 @@ Key `Task` fields:
 
 | Field | Type | Description |
 |-------|------|-------------|
-| `task_type` | `TaskType` | `CLASSIC` or `RACE_TO_GOAL` (enum) |
+| `task_type` | `TaskType` | `CLASSIC` or `WAYPOINTS` (enum) |
 | `version` | `int` | Task format version |
 | `turnpoints` | `list[Turnpoint]` | Ordered list of turnpoints |
 | `earth_model` | `EarthModel \| None` | `WGS84` or `FAI_SPHERE` |
@@ -271,7 +271,9 @@ data = report.as_dict()
 print(json.dumps(data, indent=2))
 # Keys: pyxctsk_version, s7f_edition, earth_model,
 #       task_distance_m, speed_section_distance_m,
-#       center_distance_m, center_distance_readings_m,
+#       speed_section_to_ess_m, speed_section_pre_start_m,
+#       center_distance_m, center_distance_reading,
+#       center_distance_readings_m,
 #       route (per-turnpoint optimized crossing points), notes
 ```
 

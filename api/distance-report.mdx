@@ -368,7 +368,7 @@ pyxctsk 0.7.0  |  FAI S7F 2026 V1.0  |  earth model: WGS84 (default)
 ### `S7F_EDITION`
 
 ```python
-from pyxctsk import S7F_EDITION
+from pyxctsk.distance import S7F_EDITION
 print(S7F_EDITION)   # "2026 V1.0"
 ```
 
@@ -377,7 +377,7 @@ The S7F edition the distance calculations are audited against. Appears in every 
 ### `NOTES`
 
 ```python
-from pyxctsk import NOTES
+from pyxctsk.distance import NOTES
 ```
 
 A dictionary explaining what each published number is and whether S7F defines it. Included verbatim in every `as_dict()` output under the `"notes"` key. The `center_distance_m` note explicitly states *"NOT DEFINED BY S7F"* — this is the single most important thing it says, and a number without it invites a false comparison.

@@ -1,7 +1,7 @@
 ---
-title: "Distance Functions: Optimized Routes and Geodesic Distances"
+title: "Distance API: Optimized Routes and Geodesic Distances"
 sidebarTitle: "Distance Functions"
-description: "pyxctsk distance functions: optimized_distance, geodesic_distance, MeasuredTask, TaskDistanceTable, GoalLine, SpeedSection, and the LocalPlane projection."
+description: "pyxctsk distance API: optimized_distance, geodesic_distance, MeasuredTask, GoalLine, SpeedSection, and center-distance conventions for FAI S7F tasks."
 ---
 
 The `pyxctsk.distance` package implements the full FAI Sporting Code S7F §7 task-distance pipeline: projecting turnpoints into a local Transverse Mercator plane, running the Ding–Xie–Jiang alternating sweep to find the shortest route through the cylinders, snapping each result back onto the true geodesic boundary (§7.1.7), and summing the legs on the WGS84 ellipsoid (or the FAI sphere when the task declares it). Everything a caller outside the package needs is re-exported from the `pyxctsk` top-level namespace.
@@ -307,7 +307,7 @@ from pyxctsk import geodesic_distance
 d = geodesic_distance((46.519, 8.034), (46.830, 8.180))
 print(f"{d:.1f} m")   # WGS84 ellipsoid
 
-from pyxctsk.model.enums import EarthModel
+from pyxctsk import EarthModel
 d_sphere = geodesic_distance((46.519, 8.034), (46.830, 8.180), EarthModel.FAI_SPHERE)
 print(f"{d_sphere:.1f} m")   # FAI sphere
 ```
@@ -325,7 +325,7 @@ print(f"{d_sphere:.1f} m")   # FAI sphere
 </ParamField>
 
 <Tip>
-  `FAI_SPHERE_RADIUS_M = 6_371_000.0` is also exported from `pyxctsk` for callers that need the sphere radius directly.
+  `FAI_SPHERE_RADIUS_M = 6_371_000.0` is exported from `pyxctsk.distance` for callers that need the sphere radius directly.
 </Tip>
 
 ---
@@ -428,8 +428,7 @@ Returns the goal-line length implied by the turnpoints: twice the last turnpoint
 `SpeedSection` implements FAI S7F 2026 §7.2's second task distance. The speed section distance is **not** a prefix of the task route — S7F optimizes a separate `taskToESS` route and pyxctsk does the same.
 
 ```python
-from pyxctsk import load_task, MeasuredTask
-from pyxctsk.distance import SpeedSection
+from pyxctsk import load_task, MeasuredTask, SpeedSection
 
 task = load_task("task.xctsk")
 measured = MeasuredTask.from_task(task)
@@ -568,7 +567,8 @@ The reading pyxctsk publishes and proposes as the common convention. It is the r
 `LocalPlane` is the Transverse Mercator projection the optimizer solves in (S7F §7.1.2). It is exposed in case a caller needs to inspect the projection or reuse one across multiple calls, but most callers never touch it directly.
 
 ```python
-from pyxctsk import LocalPlane, TaskTurnpoint
+from pyxctsk import TaskTurnpoint
+from pyxctsk.distance import LocalPlane
 
 centers = [(46.519, 8.034), (46.620, 8.100), (46.830, 8.180)]
 plane = LocalPlane.around(centers)  # centred on the bounding box

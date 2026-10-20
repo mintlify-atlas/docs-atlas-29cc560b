@@ -1,7 +1,7 @@
 ---
-title: "FAI S7F Distance Calculations with pyxctsk"
+title: "FAI S7F Distance Calculations for XCTrack Tasks in pyxctsk"
 sidebarTitle: "Distance Calculations"
-description: "Compute FAI S7F optimized task distances, speed-section distances, and centre distances using DistanceReport and MeasuredTask."
+description: "Compute FAI S7F optimized task distances, speed-section distances, and centre distances using DistanceReport, MeasuredTask, and related functions."
 ---
 
 pyxctsk implements FAI Sporting Code S7F distance calculations and serves as an open-source reference implementation — a task's published distance should be something anyone can reproduce, not something that depends on which device the task committee used. The core objects are `DistanceReport`, which holds every number pyxctsk publishes about a task, and `MeasuredTask`, which binds a task to its optimized route.
@@ -49,7 +49,7 @@ print(report.center_distance_reading)   # "LAUNCH_TO_GOAL"
 print(report.as_text())
 ```
 
-```
+```text
 pyxctsk 0.5.0  |  FAI S7F 2026 V1.0  |  earth model: WGS84
 
   task distance (§7.2)             92.002 km
@@ -154,8 +154,7 @@ table_dict = table.as_dict()
 For cases where you only need the total optimized distance and do not want a `MeasuredTask` or a full report, `optimized_distance()` is available. It takes a sequence of `TurnpointGeometry` objects (typically from `task_to_turnpoints`).
 
 ```python
-from pyxctsk.distance import optimized_distance
-from pyxctsk.distance.measured_task import task_to_turnpoints
+from pyxctsk.distance import optimized_distance, task_to_turnpoints
 
 turnpoints = task_to_turnpoints(task)
 dist_m = optimized_distance(turnpoints, earth_model=task.earth_model)
@@ -201,8 +200,7 @@ The three readings and when to use them:
 For the primitive — computing the polyline sum over an explicit list of turnpoints — use `distance_through_centers()`:
 
 ```python
-from pyxctsk.distance import distance_through_centers
-from pyxctsk.distance.measured_task import task_to_turnpoints
+from pyxctsk.distance import distance_through_centers, task_to_turnpoints
 
 turnpoints = task_to_turnpoints(task)
 total = distance_through_centers(turnpoints, earth_model=task.earth_model)

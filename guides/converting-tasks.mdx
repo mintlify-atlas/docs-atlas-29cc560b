@@ -1,7 +1,7 @@
 ---
-title: "Converting XCTrack Tasks Between Formats"
+title: "Converting XCTrack Tasks to JSON, KML, GeoJSON, and QR Code"
 sidebarTitle: "Converting Tasks"
-description: "Convert XCTrack tasks to JSON, KML, GeoJSON, PNG QR codes, and XCTSK: URL strings using render_task or the pyxctsk CLI."
+description: "Convert XCTrack tasks to JSON, KML, GeoJSON, PNG QR code images, and XCTSK: URL strings using render_task, Task.to_json, or the CLI."
 ---
 
 Once you have a `Task` object — from `load_task`, `parse_task`, or constructed in code — pyxctsk can write it out in any of five formats: the `.xctsk` JSON file itself, a KML map for Google Earth, a GeoJSON FeatureCollection, a PNG QR code image, and an `XCTSK:`/`XCTSKZ:` URL string. All output paths flow through a single table called `OUTPUT_FORMATS`.

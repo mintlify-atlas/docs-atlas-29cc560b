@@ -1,7 +1,7 @@
 ---
-title: "render_task and OUTPUT_FORMATS: Writing Tasks Out"
+title: "render_task and OUTPUT_FORMATS: Write XCTrack Tasks"
 sidebarTitle: "render_task"
-description: "render_task converts a Task to any supported output format. OUTPUT_FORMATS maps format names to OutputFormat objects with media type, extension, and binary flag."
+description: "render_task serialises a Task to bytes or string in any supported format. OUTPUT_FORMATS maps each name to its MIME type, extension, and binary flag."
 ---
 
 `render_task` is the single exit point for serialising an in-memory `Task` object to bytes or text. It accepts a format name, an optional compression flag, and returns the payload ready to write to a file, serve over HTTP, or encode into a QR code. The complete set of supported formats is described by `OUTPUT_FORMATS` — a dictionary that maps each format name to an `OutputFormat` object carrying its MIME type, file extension, binary flag, and the callable that produces the payload.

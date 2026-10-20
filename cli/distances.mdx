@@ -1,5 +1,5 @@
 ---
-title: "pyxctsk distances: Report FAI S7F Task Distances"
+title: "pyxctsk distances: Report XCTrack FAI S7F Distances"
 sidebarTitle: "distances"
 description: "pyxctsk distances reports a task's FAI S7F §7.2 optimized distances and the per-turnpoint route in JSON or human-readable text format."
 ---
@@ -41,7 +41,7 @@ pyxctsk distances task.xctsk --format text
 ```
 
 ```
-pyxctsk 0.5.0  |  FAI S7F 2026 V1.0  |  earth model: WGS84
+pyxctsk 0.7.0  |  FAI S7F 2026 V1.0  |  earth model: WGS84
 
   task distance (§7.2)            92.002 km
   speed section (§7.2)            86.761 km
@@ -85,7 +85,7 @@ The JSON output is the primary exchange format for comparing implementations. It
 
 ```json
 {
-  "pyxctsk_version": "0.5.0",
+  "pyxctsk_version": "0.7.0",
   "s7f_edition": "2026 V1.0",
   "earth_model": "WGS84",
   "task_distance_m": 92002.3,
@@ -176,6 +176,15 @@ The `notes` field in the JSON output states, for each key field, exactly which s
 <Note>
   `center_distance_m` is the reading pyxctsk proposes (every turnpoint centre, launch through goal, geodesic on the declared earth model). On the 22 reference tasks that carry a published value, pyxctsk agrees with the published figure to within 49 m. That agreement is by convention — not by specification — and `center_distance_readings_m` lists the alternatives so you can identify immediately whether a disagreement with another tool is a different convention or a different bug.
 </Note>
+
+## Error handling
+
+`pyxctsk distances` exits with a non-zero status and prints a message to stderr when it encounters any of the following:
+
+- **No input provided** — stdin is an interactive terminal and no `input_file` argument was given.
+- **Unparseable input** — the file is not a valid `.xctsk` JSON document, `XCTSK:`/`XCTSKZ:` string, or QR image.
+- **Too few turnpoints** — the task has fewer than two turnpoints and therefore has no leg to measure. This raises `TooFewTurnpointsError` internally; the CLI reports it as: `Error: a task needs at least two turnpoints to have a distance.`
+- **Structural violation with `--strict`** — the task breaks the spec's structural rules (e.g., missing ESS) and `--strict` was passed.
 
 ## Comparing against another implementation
 

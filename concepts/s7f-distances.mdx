@@ -1,7 +1,7 @@
 ---
 title: "FAI S7F Distance Calculations: What the Code Defines"
 sidebarTitle: "S7F Distances"
-description: "pyxctsk is a reference implementation of FAI Sporting Code S7F §7 distance calculations. Learn what S7F defines, what it leaves open, and how pyxctsk fills the gap."
+description: "How pyxctsk implements FAI Sporting Code S7F §7 distance calculations, what the spec defines, what it leaves open, and how the gap is filled."
 ---
 
 Every competition task board displays (at least) two distances: an *optimized distance* and a *distance through centres*. Pilots plan against them. Scoring software uses them. And — as pyxctsk's conformance audit found — they do not always agree between vendors, because only one of those numbers is actually defined by the FAI Sporting Code. This page explains what FAI S7F §7 specifies, how pyxctsk implements it, and what it deliberately leaves as a stated convention rather than pretending it is a rule.
@@ -127,7 +127,7 @@ pyxctsk distances your-task.xctsk
 
 Example text output:
 
-```
+```text
 pyxctsk 0.5.0  |  FAI S7F 2026 V1.0  |  earth model: WGS84
 
   task distance (§7.2)            92.002 km

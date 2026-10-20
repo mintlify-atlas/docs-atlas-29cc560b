@@ -1,5 +1,5 @@
 ---
-title: "XCTrack Task Format: Full JSON and QR Encoding"
+title: "XCTrack .xctsk Task Format: JSON and QR Code Encoding"
 sidebarTitle: "Task Format"
 description: "Understand the two XCTrack task formats — full JSON (.xctsk) and compact QR — their structure, fields, and how pyxctsk models them as typed dataclasses."
 ---
@@ -152,9 +152,9 @@ The Start of Speed Section — where the race clock begins.
 ```python
 @dataclass
 class SSS:
-    type: SSSType               # RACE or ELAPSED-TIME
-    direction: Direction        # obsolete — read, preserved, never interpreted
-    time_gates: list[TimeOfDay] # one entry per start window
+    type: SSSType                               # RACE or ELAPSED_TIME (wire: "ELAPSED-TIME")
+    direction: Direction = Direction.EXIT       # obsolete — read, preserved, never interpreted
+    time_gates: list[TimeOfDay] = field(...)   # one entry per start window; defaults to []
     time_close: TimeOfDay | None = None
     unknown: dict = ...
 ```
