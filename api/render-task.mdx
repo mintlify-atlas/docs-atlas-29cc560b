@@ -1,0 +1,226 @@
+---
+title: "render_task and OUTPUT_FORMATS: Writing Tasks Out"
+sidebarTitle: "render_task"
+description: "render_task converts a Task to any supported output format. OUTPUT_FORMATS maps format names to OutputFormat objects with media type, extension, and binary flag."
+---
+
+`render_task` is the single exit point for serialising an in-memory `Task` object to bytes or text. It accepts a format name, an optional compression flag, and returns the payload ready to write to a file, serve over HTTP, or encode into a QR code. The complete set of supported formats is described by `OUTPUT_FORMATS` — a dictionary that maps each format name to an `OutputFormat` object carrying its MIME type, file extension, binary flag, and the callable that produces the payload.
+
+---
+
+## `render_task`
+
+```python
+def render_task(task: Task, output_format: str, compressed: bool = False) -> str | bytes
+```
+
+Serialises a `Task` to one of the formats this library can write. The return type depends on the format: text formats return `str`; binary formats return `bytes`. To determine which programmatically, check `OUTPUT_FORMATS[output_format].binary` before writing to a file or setting a `Content-Type` header.
+
+### Parameters
+
+<ParamField path="task" type="Task" required>
+  The task to serialise. Any `Task` instance returned by `parse_task` or `load_task` is accepted.
+</ParamField>
+
+<ParamField path="output_format" type="str" required>
+  The name of the output format. Must be one of the keys in `OUTPUT_FORMATS`:
+  `"json"`, `"kml"`, `"geojson"`, `"png"`, or `"qrcode-json"`.
+  An unknown name raises `ValueError` with a message listing the valid choices.
+</ParamField>
+
+<ParamField path="compressed" type="bool" default="False">
+  When `True`, the QR payload is encoded with the `XCTSKZ:` scheme (zlib-compressed, then base64-encoded) rather than the plain `XCTSK:` scheme. This flag is **read by `"png"` and `"qrcode-json"`** and silently ignored by `"json"`, `"kml"`, and `"geojson"`, so you can pass it unconditionally without knowing which formats care.
+</ParamField>
+
+### Returns
+
+`str | bytes` — the serialised task. Returns `bytes` when `OUTPUT_FORMATS[output_format].binary` is `True` (currently only `"png"`); returns `str` for all other formats.
+
+### Exceptions
+
+| Exception | When raised |
+|---|---|
+| `ValueError` | `output_format` is not a key in `OUTPUT_FORMATS`. The message names all valid choices. |
+
+---
+
+## `OutputFormat`
+
+```python
+@dataclass(frozen=True)
+class OutputFormat:
+    name: str
+    media_type: str
+    extension: str
+    binary: bool
+    render: Callable[[Task, bool], str | bytes]
+```
+
+An immutable dataclass describing one output format. Every entry in `OUTPUT_FORMATS` is an instance of this class.
+
+<ResponseField name="name" type="str">
+  The format identifier — the key used to look it up in `OUTPUT_FORMATS` and the value passed as `output_format` to `render_task`.
+</ResponseField>
+
+<ResponseField name="media_type" type="str">
+  The MIME type to use when serving this format over HTTP (e.g. in a `Content-Type` header).
+</ResponseField>
+
+<ResponseField name="extension" type="str">
+  The conventional file extension for this format, including the leading dot (e.g. `".xctsk"`).
+</ResponseField>
+
+<ResponseField name="binary" type="bool">
+  `True` when `render` returns `bytes` rather than `str`. Open files in binary mode (`"wb"`) when this is `True`.
+</ResponseField>
+
+<ResponseField name="render" type="Callable[[Task, bool], str | bytes]">
+  The internal callable that produces the payload. Takes the `Task` and the `compressed` flag; called by `render_task` — you do not need to call it directly.
+</ResponseField>
+
+---
+
+## `OUTPUT_FORMATS`
+
+```python
+OUTPUT_FORMATS: dict[str, OutputFormat]
+```
+
+A dictionary mapping every supported format name to its `OutputFormat` descriptor. Use this to enumerate available formats, look up metadata, or validate a format name before calling `render_task`.
+
+### Supported formats
+
+| Format name | MIME type | Extension | Binary | `compressed` flag |
+|---|---|---|---|---|
+| `json` | `application/xctsk` | `.xctsk` | No | Ignored |
+| `kml` | `application/vnd.google-earth.kml+xml` | `.kml` | No | Ignored |
+| `geojson` | `application/geo+json` | `.geojson` | No | Ignored |
+| `png` | `image/png` | `.png` | **Yes** | Respected |
+| `qrcode-json` | `text/plain` | `.txt` | No | Respected |
+
+<Note>
+  The `"png"` format and the `"qrcode-json"` format both require the optional `qr` dependency group. Install it with `pip install 'pyxctsk[qr]'`. Attempting to render either format without the dependencies raises a `MissingQRCodeSupportError` (which is also an `ImportError`).
+</Note>
+
+### The `compressed` flag in detail
+
+The `"qrcode-json"` format produces the compact QR payload as a plain string (the text a QR scanner would decode). By default it uses the `XCTSK:` scheme; with `compressed=True` it uses `XCTSKZ:` (zlib-compressed and base64-encoded), producing a shorter string that encodes into a denser QR image.
+
+The `"png"` format renders that same string into a scannable 1024×1024 pixel QR code image. The `compressed` flag controls which string is encoded, so a `png` rendered with `compressed=True` produces a QR code that decodes to an `XCTSKZ:` URL.
+
+The three text formats (`json`, `kml`, `geojson`) produce self-contained documents that do not reference the QR encoding at all, so `compressed` has no effect on them.
+
+---
+
+## Code examples
+
+### Write a task to a `.xctsk` file
+
+```python
+from pyxctsk import load_task, render_task
+
+task = load_task("input.xctsk")
+output = render_task(task, "json")
+
+with open("output.xctsk", "w", encoding="utf-8") as f:
+    f.write(output)
+```
+
+### Export a KML map
+
+```python
+from pyxctsk import load_task, render_task
+
+task = load_task("task.xctsk")
+kml = render_task(task, "kml")
+
+with open("task_map.kml", "w", encoding="utf-8") as f:
+    f.write(kml)
+```
+
+### Export a GeoJSON FeatureCollection
+
+```python
+from pyxctsk import load_task, render_task
+
+task = load_task("task.xctsk")
+geojson = render_task(task, "geojson")
+
+with open("task.geojson", "w", encoding="utf-8") as f:
+    f.write(geojson)
+```
+
+### Render a QR code image (PNG)
+
+<Note>
+  Requires `pip install 'pyxctsk[qr]'`.
+</Note>
+
+```python
+from pyxctsk import load_task, render_task
+
+task = load_task("task.xctsk")
+png_bytes = render_task(task, "png")          # XCTSK: encoding
+# or, for a denser code:
+png_bytes = render_task(task, "png", compressed=True)   # XCTSKZ: encoding
+
+with open("task_qr.png", "wb") as f:
+    f.write(png_bytes)
+```
+
+### Get the raw QR string (without rendering an image)
+
+```python
+from pyxctsk import load_task, render_task
+
+task = load_task("task.xctsk")
+qr_string = render_task(task, "qrcode-json")
+# → "XCTSK:eyJ0IjoxLCJlYXJ0..."
+
+qr_string_compressed = render_task(task, "qrcode-json", compressed=True)
+# → "XCTSKZ:eJyLjgUAARUBFQ=="
+```
+
+### Use `OUTPUT_FORMATS` to write to a file generically
+
+```python
+from pyxctsk import load_task, render_task, OUTPUT_FORMATS
+
+task = load_task("task.xctsk")
+
+for name, fmt in OUTPUT_FORMATS.items():
+    payload = render_task(task, name)
+    mode = "wb" if fmt.binary else "w"
+    kwargs = {} if fmt.binary else {"encoding": "utf-8"}
+    with open(f"task{fmt.extension}", mode, **kwargs) as f:
+        f.write(payload)
+    print(f"Wrote {name} → task{fmt.extension}  ({fmt.media_type})")
+```
+
+### Serve a format over HTTP (Flask example)
+
+```python
+from flask import Response
+from pyxctsk import load_task, render_task, OUTPUT_FORMATS
+
+task = load_task("task.xctsk")
+
+def serve_task(fmt_name: str) -> Response:
+    fmt = OUTPUT_FORMATS[fmt_name]          # KeyError → 400 in your error handler
+    payload = render_task(task, fmt_name)
+    return Response(payload, mimetype=fmt.media_type)
+```
+
+### Handle an unknown format name
+
+```python
+from pyxctsk import load_task, render_task
+
+task = load_task("task.xctsk")
+
+try:
+    result = render_task(task, "svg")
+except ValueError as e:
+    print(e)
+    # not an output format: 'svg' (expected one of ['geojson', 'json', 'kml', 'png', 'qrcode-json'])
+```

@@ -1,0 +1,181 @@
+---
+title: "FAI S7F Distance Calculations: What the Code Defines"
+sidebarTitle: "S7F Distances"
+description: "pyxctsk is a reference implementation of FAI Sporting Code S7F §7 distance calculations. Learn what S7F defines, what it leaves open, and how pyxctsk fills the gap."
+---
+
+Every competition task board displays (at least) two distances: an *optimized distance* and a *distance through centres*. Pilots plan against them. Scoring software uses them. And — as pyxctsk's conformance audit found — they do not always agree between vendors, because only one of those numbers is actually defined by the FAI Sporting Code. This page explains what FAI S7F §7 specifies, how pyxctsk implements it, and what it deliberately leaves as a stated convention rather than pretending it is a rule.
+
+<Note>
+  pyxctsk's distance calculations are audited against **FAI Sporting Code S7F 2026 V1.0** (effective 1 May 2026, `sha256:6a0f400b…`). The constant `S7F_EDITION = "2026 V1.0"` is emitted with every `DistanceReport` so that a comparison between implementations always names its reference.
+</Note>
+
+## What S7F §7.2 actually defines
+
+Section 7.2 is the complete distance specification in the Sporting Code:
+
+> *"Task distance is defined as the distance of the optimized path from launch to goal. Speed section distance is defined as the distances of the optimized path from launch to ESS, minus the distance of the pre-start portion."*
+
+Two numbers, both built on the same algorithm chain:
+
+| Distance | Definition |
+|---|---|
+| **Task distance** | Optimized path, launch → goal cylinder boundary |
+| **Speed section distance** | Separate `taskToESS` optimization, launch → ESS, minus the pre-start leg |
+
+<Warning>
+  **"Distance through centres" appears nowhere in the 2026 edition of S7F.** Not in §7, not in §3's definitions, not in §6's task-setting rules. It is a display convention that every vendor has invented independently, and three defensible readings of it produce numbers up to **39.9 km apart** on the same task. See [Finding 1](#finding-1-the-undefined-number) below.
+</Warning>
+
+## The algorithm chain
+
+S7F specifies the optimizer in unusual detail. pyxctsk implements each step:
+
+<Accordion title="§7.1.2 — Localized Transverse Mercator projection">
+  The route is solved on a flat plane, not directly on the earth. S7F requires a Transverse Mercator projection centred on the task area, with a scale factor `k₀ = 0.99994` (latitude-dependent above 55°). pyxctsk implements a two-pass task-area centre (§7.1.6) to find the projection origin, then projects all turnpoints into that plane.
+</Accordion>
+
+<Accordion title="§7.1.3 — Ding–Xie–Jiang path optimizer, ε = 0.1 m">
+  The optimizer that finds the shortest path through a sequence of cylinders. It alternately fixes odd- and even-indexed route points and re-solves each against its neighbours until no point moves more than ε = 0.1 m. The method converges to a *local* optimum; pyxctsk uses multi-start from three deterministic seed configurations (centres, forward chain along boundaries, backward chain) and keeps the shortest. On the reference corpus this reduces the worst-case missed improvement from 98.6 m to 10 mm.
+</Accordion>
+
+<Accordion title="§7.1.4–7.1.5 — WGS84 geodesics (Karney 2013)">
+  Leg lengths are geodesic distances on the WGS84 ellipsoid (or FAI sphere when the task declares it). pyxctsk uses pyproj's Karney solver for both. Two conforming implementations should agree to within millimetres on leg lengths.
+</Accordion>
+
+<Accordion title="§7.1.6 — Two-pass task-area centre">
+  The projection centre is the mean of all turnpoint coordinates, refined by a second pass that discards outliers. pyxctsk's implementation is antimeridian-aware.
+</Accordion>
+
+<Accordion title="§7.1.7 — Projection correction to cylinder boundaries (snap)">
+  A route point solved in the plane does not sit exactly at radius `r` on the earth model. §7.1.7's "projection correction" re-places each point at exactly `r` along the geodesic azimuth from the cylinder centre toward the plane-solution point. This is `snap_to_boundary()` in pyxctsk.
+</Accordion>
+
+## Speed section distance: a *separate* optimization
+
+S7F §7.2 is explicit: speed section distance is a **separate** `taskToESS` route optimization, not a prefix of the task route. pyxctsk implements `SpeedSection` accordingly — it runs the optimizer again from launch to ESS independently, then subtracts the pre-start portion.
+
+```python
+from pyxctsk import DistanceReport, load_task
+
+report = DistanceReport.from_task(load_task("my-task.xctsk"))
+
+print(report.task_distance_m)           # S7F §7.2 task distance, metres
+print(report.speed_section_distance_m)  # S7F §7.2 speed section — None if no SSS/ESS pair
+print(report.speed_section_to_ess_m)    # taskToESS total, metres
+print(report.speed_section_pre_start_m) # pre-start portion, metres
+```
+
+<Note>
+  `speed_section_distance_m` is `None` when the task has no SSS/ESS pair. Approximately a third of the reference corpus has none. Always check before using the value in arithmetic.
+</Note>
+
+## Finding 1 — the undefined number
+
+"Distance through centres" is a display convention every vendor has implemented independently. Three defensible readings, on the reference task `pepi` (optimized distance 92 km):
+
+| Reading | `task_pepi` |
+|---|---:|
+| Every turnpoint centre, launch through goal | 321.4 km |
+| …ending at the goal cylinder boundary (launch to goal centre minus goal radius) | 321.2 km |
+| From the SSS rather than from launch | **281.6 km** |
+
+**39.9 km apart** on a single task. Nothing in S7F prefers one reading over another. Further defensible variations exist: measuring on the FAI sphere vs WGS84, and whether consecutive duplicate turnpoints contribute a leg.
+
+pyxctsk implements the first reading — **every turnpoint centre, launch to goal, geodesic on the task's declared earth model** — and stores the alternatives beside it for diagnosis.
+
+<Warning>
+  **The centre distance is a convention, not a specification.** The agreement between pyxctsk and the 22 reference tasks (within 49 m, inside 0.1 km display rounding) is agreement by convention. It can break silently when a new vendor arrives, or when the same vendor changes its implementation. If your task board disagrees with pyxctsk's number, use `pyxctsk distances` to determine whether the cause is a different reading or a different bug.
+</Warning>
+
+## Using `DistanceReport`
+
+```python
+from pyxctsk import DistanceReport, load_task
+
+report = DistanceReport.from_task(load_task("competition.xctsk"))
+
+# The two S7F-defined distances
+print(report.task_distance_m)           # float, metres
+print(report.speed_section_distance_m)  # float | None
+
+# The convention S7F does not define
+print(report.center_distance_m)         # float | None, proposed reading
+print(report.center_distance_reading)   # which reading was used (name)
+print(report.center_distance_readings_m)  # dict of all readings
+
+# Per-turnpoint route with crossing points
+for row in report.route():
+    print(row.name, row.radius_m, row.route_lat, row.route_lon, row.cumulative_m)
+
+# Full machine-readable report (for diffing against another implementation)
+d = report.as_dict()
+
+# Human-readable text (same as --format text in the CLI)
+print(report.as_text())
+```
+
+From the CLI:
+
+```bash
+# Text output (human-readable)
+pyxctsk distances your-task.xctsk --format text
+
+# JSON output (machine-readable, suitable for diffing)
+pyxctsk distances your-task.xctsk
+```
+
+Example text output:
+
+```
+pyxctsk 0.5.0  |  FAI S7F 2026 V1.0  |  earth model: WGS84
+
+  task distance (§7.2)            92.002 km
+  speed section (§7.2)            86.761 km
+  through centres                321.440 km   [LAUNCH_TO_GOAL]
+
+  'through centres' is NOT defined by S7F. Other readings of it:
+    LAUNCH_TO_GOAL                321.440 km
+    LAUNCH_TO_GOAL_BOUNDARY       321.240 km
+    START_TO_GOAL                 281.568 km
+
+  optimized route:
+     0 D01        TAKEOFF  r=     0 m    4.476050  -76.153519     0.000 km
+     1 X09        SSS      r= 37000 m    4.502847  -76.137677     3.446 km
+     ...
+     8 G02                 r=   200 m    4.589699  -75.967881    92.002 km
+```
+
+## What pyxctsk implements (conformance table)
+
+| S7F section | Status | Notes |
+|---|---|---|
+| §4.1, §4.2 WGS84 geodesics | ✅ | Karney (2013) via pyproj |
+| §7.1.2 LTM projection, k₀ = 0.99994 | ✅ | Latitude-dependent above 55° |
+| §7.1.3 Ding–Xie–Jiang, ε = 0.1 m | ✅ | Plus multi-start (see Finding 3 in source docs) |
+| §7.1.6 Task-area centre, two passes | ✅ | Antimeridian-aware |
+| §7.1.7 Projection correction to boundaries | ✅ | `snap_to_boundary()` |
+| §7.2 Task distance | ✅ | Route to goal boundary |
+| §7.2 Speed section distance | ✅ | Separate `taskToESS` optimization |
+| §6.2.3.1 Goal line, oriented from optimized route point | ✅ | 2025 rule; 2024 rule still selectable |
+| §6.2.3.2 Elevated goal, 0–1000 m | ✅ | Validated |
+| §6.2.1 Control-zone altitude limits | ❌ | No keys in the task format |
+| §8, §9, §10–16 Tracklog / scoring | ❌ | Out of scope |
+| "Distance through centres" | ⚠️ | **Not defined by S7F.** One stated convention, alternatives kept for diagnosis. |
+
+## `NOTES` — provenance travels with the report
+
+Every `DistanceReport.as_dict()` output includes a `notes` block that names which S7F section defines each number and flags the one it does not:
+
+```python
+from pyxctsk.distance import NOTES
+
+print(NOTES["task_distance_m"])
+# "FAI S7F 2026 §7.2, optimized launch to goal"
+
+print(NOTES["center_distance_m"])
+# "NOT DEFINED BY S7F. A task-board convention; this is the
+#  reading pyxctsk proposes. See center_distance_readings_m for
+#  the alternatives and docs/s7f-distance-reference.md for why
+#  they differ by up to 39.9 km"
+```

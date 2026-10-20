@@ -1,0 +1,437 @@
+---
+title: "pyxctsk Exceptions: Error Hierarchy and Handling"
+sidebarTitle: "Exceptions"
+description: "All pyxctsk exceptions inherit from pyXCTSKError. Learn each exception class, when it is raised, and how to handle errors in library and CLI usage."
+---
+
+Every error raised by pyxctsk descends from `pyXCTSKError`, so a single `except pyXCTSKError` catches the entire library surface. Several exceptions also inherit from a matching Python built-in (`ValueError`, `ImportError`) to stay compatible with code that already catches those types. All exception classes are importable from the top-level `pyxctsk` package.
+
+---
+
+## Exception Hierarchy
+
+```
+pyXCTSKError (base)
+├── EmptyInputError
+├── InvalidFormatError
+├── MalformedPayloadError          (also ValueError)
+├── TaskValidationError
+├── MissingQRCodeSupportError      (also ImportError)
+├── TooFewTurnpointsError          (also ValueError)
+├── MismatchedRouteError           (also ValueError)
+├── UnmeasurableRouteError
+└── InvalidTimeOfDayError          (also ValueError)
+```
+
+---
+
+## Base Class
+
+### `pyXCTSKError`
+
+```python
+class pyXCTSKError(Exception): ...
+```
+
+The root of the entire pyxctsk exception hierarchy. Catch this to handle any library error with a single `except` clause. It carries no additional attributes beyond the standard `Exception.args`.
+
+```python
+from pyxctsk import pyXCTSKError, load_task
+
+try:
+    task = load_task("task.xctsk")
+except pyXCTSKError as exc:
+    print(f"pyxctsk error: {exc}")
+```
+
+---
+
+## Parse and Format Errors
+
+### `EmptyInputError`
+
+```python
+class EmptyInputError(pyXCTSKError): ...
+```
+
+Raised when the input data is empty — an empty string, empty bytes, or a zero-length file. Signals that there is nothing to parse, rather than something malformed.
+
+<CodeGroup>
+```python Library
+from pyxctsk import parse_task, EmptyInputError
+
+try:
+    task = parse_task("")
+except EmptyInputError:
+    print("No input data provided.")
+```
+
+```python File path
+from pyxctsk import load_task, EmptyInputError
+
+try:
+    task = load_task("empty.xctsk")
+except EmptyInputError:
+    print("File is empty.")
+```
+</CodeGroup>
+
+---
+
+### `InvalidFormatError`
+
+```python
+class InvalidFormatError(pyXCTSKError): ...
+```
+
+Raised when the input is not empty but no adapter recognises it — it is neither valid JSON, nor an `XCTSK:`/`XCTSKZ:` URL, nor a QR code image. Also raised when an adapter claims to recognise the format but the payload turns out to be structurally incompatible (for example, a PNG that is not a QR code).
+
+```python
+from pyxctsk import parse_task, InvalidFormatError
+
+try:
+    task = parse_task("this is not a task")
+except InvalidFormatError as exc:
+    print(f"Unrecognised input format: {exc}")
+```
+
+---
+
+### `MalformedPayloadError`
+
+```python
+class MalformedPayloadError(pyXCTSKError, ValueError): ...
+```
+
+Raised when a recognised payload (valid JSON, valid `XCTSK:` string) has the wrong internal structure — a missing required field, a value of the wrong type, or an unknown enum string. It is the single error that task parsing raises once a format has been identified.
+
+#### Attributes
+
+<ResponseField name="reason" type="str">
+  What was wrong, without location context — e.g. `"missing required field 'taskType'"`.
+</ResponseField>
+
+<ResponseField name="path" type="str">
+  Where in the payload the error was found, expressed as a dot-separated key path from the root — e.g. `"turnpoints[0].waypoint"`. Empty for errors at the root itself.
+</ResponseField>
+
+#### Method
+
+<ResponseField name="inside(segment)" type="MalformedPayloadError">
+  Returns a new `MalformedPayloadError` whose `path` is prefixed by `segment`. Used internally to build up the path as the parser unwinds the call stack — callers should not usually need this.
+</ResponseField>
+
+```python
+from pyxctsk import parse_task, MalformedPayloadError
+
+try:
+    task = parse_task('{"taskType": "CLASSIC", "version": 1}')  # missing 'turnpoints'
+except MalformedPayloadError as exc:
+    print(f"Malformed payload at '{exc.path}': {exc.reason}")
+    # e.g. "Malformed payload at '': missing required field 'turnpoints'"
+```
+
+<Note>
+  `MalformedPayloadError` also inherits from `ValueError`. Code that already catches `ValueError` around task-parsing calls will continue to catch it without modification.
+</Note>
+
+---
+
+## Validation Error
+
+### `TaskValidationError`
+
+```python
+class TaskValidationError(pyXCTSKError): ...
+```
+
+Raised when a task parses successfully (all fields are present and of the right type) but breaks the spec's structural rules — for example, `TAKEOFF` is not on the first turnpoint, or `SSS` appears more than once. This is only raised when `strict=True` is passed to `parse_task()` or `load_task()`; the default is to return the task and let the caller decide via `Task.validate()`.
+
+#### Attribute
+
+<ResponseField name="issues" type="list[ValidationIssue]">
+  One `ValidationIssue` per violated rule, in the order the rules were checked. Each issue has a `rule` (`ValidationRule` enum member) and a `message` (human-readable string). `str(issue)` returns the message.
+</ResponseField>
+
+<CodeGroup>
+```python strict=True (raises)
+from pyxctsk import load_task, TaskValidationError
+
+try:
+    task = load_task("task.xctsk", strict=True)
+except TaskValidationError as exc:
+    for issue in exc.issues:
+        print(f"[{issue.rule.name}] {issue}")
+```
+
+```python Manual validate()
+from pyxctsk import load_task
+
+task = load_task("task.xctsk")   # always succeeds structurally
+issues = task.validate()
+
+if issues:
+    for issue in issues:
+        print(f"[{issue.rule.name}] {issue}")
+else:
+    print("Task is valid.")
+```
+</CodeGroup>
+
+---
+
+## Distance and Route Errors
+
+### `TooFewTurnpointsError`
+
+```python
+class TooFewTurnpointsError(pyXCTSKError, ValueError): ...
+```
+
+Raised when a distance calculation is requested on a task that has fewer than two turnpoints. A single point has no route to optimize, so a distance result is not meaningful. Inherits from `ValueError` for backward compatibility.
+
+```python
+from pyxctsk import load_task, DistanceReport, TooFewTurnpointsError
+
+task = load_task("task.xctsk")
+
+try:
+    report = DistanceReport.from_task(task)
+except TooFewTurnpointsError as exc:
+    print(f"Task too short to measure: {exc}")
+```
+
+---
+
+### `MismatchedRouteError`
+
+```python
+class MismatchedRouteError(pyXCTSKError, ValueError): ...
+```
+
+Raised when a pre-computed route is paired with a task it was not computed for. A `MeasuredTask` binds one optimized route point per turnpoint, each confirmed to lie inside its cylinder on the task's earth model. Passing in another task's route would produce a silently wrong distance report; this error prevents that. Inherits from `ValueError` for backward compatibility.
+
+```python
+from pyxctsk import MismatchedRouteError
+
+try:
+    # ... constructing a MeasuredTask with a mismatched route
+    pass
+except MismatchedRouteError as exc:
+    print(f"Route/task mismatch: {exc}")
+```
+
+---
+
+### `UnmeasurableRouteError`
+
+```python
+class UnmeasurableRouteError(pyXCTSKError): ...
+```
+
+Raised when the task's geometry cannot be projected into a local plane for distance solving. Two conditions trigger it: a point so far from the task area that its Transverse Mercator image is not finite, and a cylinder so large that its boundary cannot be placed on the earth's surface. Does **not** inherit from `ValueError` — there is no earlier type to stay compatible with.
+
+```python
+from pyxctsk import load_task, DistanceReport, UnmeasurableRouteError
+
+task = load_task("task.xctsk")
+
+try:
+    report = DistanceReport.from_task(task)
+except UnmeasurableRouteError as exc:
+    print(f"Task geometry cannot be measured: {exc}")
+```
+
+---
+
+## QR Code Error
+
+### `MissingQRCodeSupportError`
+
+```python
+class MissingQRCodeSupportError(pyXCTSKError, ImportError): ...
+```
+
+Raised when QR code image rendering or reading is requested but the `[qr]` extra is not installed. The `[qr]` extra (Pillow, qrcode, zxing-cpp) is required only for PNG output and QR image input — `XCTSK:` / `XCTSKZ:` string handling works with the core install.
+
+<CodeGroup>
+```python Writing a PNG
+from pyxctsk import load_task, render_task, MissingQRCodeSupportError
+
+task = load_task("task.xctsk")
+
+try:
+    png_bytes = render_task(task, "png")
+    with open("task_qr.png", "wb") as f:
+        f.write(png_bytes)
+except MissingQRCodeSupportError:
+    print("Install pyxctsk[qr] for PNG QR code output.")
+```
+
+```python Reading a PNG
+from pyxctsk import load_task, MissingQRCodeSupportError, InvalidFormatError
+
+try:
+    task = load_task("task_qr.png")
+except MissingQRCodeSupportError:
+    print("Install pyxctsk[qr] to read QR code images.")
+except InvalidFormatError:
+    print("File is not a recognized task format.")
+```
+</CodeGroup>
+
+<Note>
+  `MissingQRCodeSupportError` inherits from both `pyXCTSKError` **and** `ImportError`. This means existing `except ImportError` guards around `generate_qrcode_image()` calls continue to catch it without modification, while the CLI's `except pyXCTSKError` handler also catches it and reports it as a user-facing error rather than surfacing a traceback.
+</Note>
+
+---
+
+## Time Parsing Error
+
+### `InvalidTimeOfDayError`
+
+```python
+class InvalidTimeOfDayError(pyXCTSKError, ValueError): ...
+```
+
+Raised whenever a time value is not a valid `HH:MM:SSZ` string, or when a `TimeOfDay` is constructed with a field out of range. Both cases use the same message format: `invalid time '<value>': <reason>`.
+
+#### Attributes
+
+<ResponseField name="time_str" type="object">
+  The value that failed to parse, exactly as it arrived on the wire. Usually a `str`, but could be any type if the wire carried a non-string where a time was expected.
+</ResponseField>
+
+<ResponseField name="reason" type="str">
+  Why the value is not a valid time. Defaults to `"expected HH:MM:SSZ"` for format errors; field-range errors are phrased as e.g. `"hour must be between 0 and 23"`.
+</ResponseField>
+
+```python
+from pyxctsk import TimeOfDay, InvalidTimeOfDayError
+
+# Bad format
+try:
+    t = TimeOfDay.from_json_string("12:00Z")   # missing seconds
+except InvalidTimeOfDayError as exc:
+    print(exc)               # invalid time '12:00Z': expected HH:MM:SSZ
+    print(exc.time_str)      # '12:00Z'
+    print(exc.reason)        # 'expected HH:MM:SSZ'
+
+# Field out of range
+try:
+    t = TimeOfDay(hour=25, minute=0, second=0)
+except InvalidTimeOfDayError as exc:
+    print(exc)               # invalid time '25:00:00Z': hour must be between 0 and 23
+    print(exc.time_str)      # '25:00:00Z'
+    print(exc.reason)        # 'hour must be between 0 and 23'
+```
+
+---
+
+## Dual-Base Exceptions
+
+<Note>
+  Several pyxctsk exceptions inherit from **both** `pyXCTSKError` and a Python built-in type (`ValueError` or `ImportError`). This pattern serves backward compatibility: code written before these exceptions existed in the hierarchy already catches `ValueError` or `ImportError`, and adding the second base means it continues to work without modification. The dual-base exceptions are:
+
+  - `MalformedPayloadError(pyXCTSKError, ValueError)`
+  - `TooFewTurnpointsError(pyXCTSKError, ValueError)`
+  - `MismatchedRouteError(pyXCTSKError, ValueError)`
+  - `InvalidTimeOfDayError(pyXCTSKError, ValueError)`
+  - `MissingQRCodeSupportError(pyXCTSKError, ImportError)`
+
+  `UnmeasurableRouteError` does **not** have a second base — it has no earlier type to stay compatible with.
+</Note>
+
+---
+
+## Handling Patterns
+
+### Catch everything from the library
+
+```python
+from pyxctsk import load_task, pyXCTSKError
+
+try:
+    task = load_task("task.xctsk")
+except pyXCTSKError as exc:
+    # Catches EmptyInputError, InvalidFormatError, MalformedPayloadError,
+    # TaskValidationError (strict=True), and any other library error.
+    print(f"Could not load task: {exc}")
+```
+
+### Distinguish parse errors from validation errors
+
+```python
+from pyxctsk import (
+    load_task,
+    EmptyInputError,
+    InvalidFormatError,
+    MalformedPayloadError,
+    TaskValidationError,
+    pyXCTSKError,
+)
+
+try:
+    task = load_task("task.xctsk", strict=True)
+except EmptyInputError:
+    print("File is empty.")
+except InvalidFormatError as exc:
+    print(f"Not a recognised task format: {exc}")
+except MalformedPayloadError as exc:
+    location = f" at '{exc.path}'" if exc.path else ""
+    print(f"Malformed task{location}: {exc.reason}")
+except TaskValidationError as exc:
+    rules = ", ".join(issue.rule.name for issue in exc.issues)
+    print(f"Task violates spec rules: {rules}")
+except pyXCTSKError as exc:
+    # Catch-all for any other library error
+    print(f"pyxctsk error: {exc}")
+```
+
+### React to a specific validation rule
+
+```python
+from pyxctsk import load_task, TaskValidationError, ValidationRule
+
+try:
+    task = load_task("task.xctsk", strict=True)
+except TaskValidationError as exc:
+    for issue in exc.issues:
+        if issue.rule == ValidationRule.TAKEOFF_NOT_FIRST:
+            print("Fix: move the TAKEOFF turnpoint to index 0.")
+        elif issue.rule == ValidationRule.SPECIAL_NOT_ONCE:
+            print("Fix: ensure SSS and ESS each appear exactly once.")
+        else:
+            print(f"[{issue.rule.name}] {issue}")
+```
+
+### Handle QR and distance errors
+
+```python
+from pyxctsk import (
+    load_task,
+    render_task,
+    DistanceReport,
+    MissingQRCodeSupportError,
+    TooFewTurnpointsError,
+    UnmeasurableRouteError,
+    pyXCTSKError,
+)
+
+task = load_task("task.xctsk")
+
+# QR image output
+try:
+    png_bytes = render_task(task, "png")
+except MissingQRCodeSupportError:
+    print("Run: pip install 'pyxctsk[qr]'")
+
+# Distance calculation
+try:
+    report = DistanceReport.from_task(task)
+    print(report.as_text())
+except TooFewTurnpointsError:
+    print("Task needs at least two turnpoints for a distance calculation.")
+except UnmeasurableRouteError as exc:
+    print(f"Task geometry cannot be solved: {exc}")
+```

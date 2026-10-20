@@ -1,72 +1,97 @@
 {
   "$schema": "https://mintlify.com/docs.json",
-  "theme": "mint",
-  "name": "Mintlify Starter Kit",
+  "name": "pyxctsk",
+  "theme": "luma",
   "colors": {
-    "primary": "#16A34A",
-    "light": "#07C983",
-    "dark": "#15803D"
-  },
-  "favicon": "/favicon.svg",
-  "navigation": {
-    "pages": [
-      {
-        "group": "Getting Started",
-        "pages": [
-          "index",
-          "quickstart"
-        ]
-      }
-    ],
-    "global": {
-      "anchors": [
-        {
-          "anchor": "Documentation",
-          "href": "https://mintlify.com/docs",
-          "icon": "book-open-cover"
-        },
-        {
-          "anchor": "Blog",
-          "href": "https://mintlify.com/blog",
-          "icon": "newspaper"
-        }
-      ]
-    }
-  },
-  "logo": {
-    "light": "/logo/light.svg",
-    "dark": "/logo/dark.svg"
+    "primary": "#2563EB",
+    "light": "#DBEAFE",
+    "dark": "#1E3A5F"
   },
   "navbar": {
-    "links": [
-      {
-        "label": "Support",
-        "href": "mailto:support@mintlify.com"
-      }
-    ],
     "primary": {
-      "type": "button",
-      "label": "Dashboard",
-      "href": "https://app.mintlify.com"
+      "type": "github",
+      "href": "https://github.com/simonsteiner/pyxctsk"
     }
-  },
-  "contextual": {
-    "options": [
-      "copy",
-      "view",
-      "chatgpt",
-      "claude",
-      "perplexity",
-      "mcp",
-      "cursor",
-      "vscode"
-    ]
   },
   "footer": {
     "socials": {
-      "x": "https://x.com/mintlify",
-      "github": "https://github.com/mintlify",
-      "linkedin": "https://linkedin.com/company/mintlify"
+      "github": "https://github.com/simonsteiner/pyxctsk"
     }
+  },
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "installation"
+            ]
+          },
+          {
+            "group": "Guides",
+            "pages": [
+              "guides/parsing-tasks",
+              "guides/converting-tasks",
+              "guides/qr-codes",
+              "guides/distance-calculations",
+              "guides/exporting-maps"
+            ]
+          },
+          {
+            "group": "CLI Reference",
+            "pages": [
+              "cli/overview",
+              "cli/convert",
+              "cli/distances"
+            ]
+          },
+          {
+            "group": "Concepts",
+            "pages": [
+              "concepts/task-format",
+              "concepts/s7f-distances",
+              "concepts/earth-models"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Front Door",
+            "pages": [
+              "api/parse-and-load",
+              "api/render-task"
+            ]
+          },
+          {
+            "group": "Data Model",
+            "pages": [
+              "api/model",
+              "api/exceptions"
+            ]
+          },
+          {
+            "group": "Distance & Route",
+            "pages": [
+              "api/distance",
+              "api/distance-report"
+            ]
+          },
+          {
+            "group": "Export",
+            "pages": [
+              "api/qrcode",
+              "api/export"
+            ]
+          }
+        ]
+      }
+    ]
   }
 }

@@ -1,0 +1,494 @@
+---
+title: "Task Data Model: Task, Turnpoint, Waypoint, and Enums"
+sidebarTitle: "Data Model"
+description: "The pyxctsk data model — Task, Turnpoint, Waypoint, Takeoff, SSS, Goal dataclasses and their enum fields — extracted from src/pyxctsk/model/."
+---
+
+The pyxctsk data model is a set of plain dataclasses that map one-to-one onto the [XCTrack Competition Interfaces specification](http://xctrack.org/Competition_Interfaces.html). Nothing derived is stored on them: constructors do not validate or backfill, serialization writes exactly what was read, and unknown keys from the wire are carried verbatim through a round-trip in the `unknown` dict. The one exception is `TimeOfDay`, which validates its field ranges on construction. Every model class and every enum is re-exported from the top-level `pyxctsk` package — `from pyxctsk import Task, Turnpoint, TaskType` always works.
+
+---
+
+## Core Dataclasses
+
+### `Task`
+
+The root object of every `.xctsk` file. Holds the full set of turnpoints, the timing rules for the speed section, the goal definition, and optional manufacturer extensions. All fields after `turnpoints` are optional — an absent goal is treated as `CYLINDER` through `Task.effective_goal`.
+
+<ParamField path="task_type" type="TaskType" required>
+  The task category. `TaskType.CLASSIC` for a speed-section race; `TaskType.WAYPOINTS` for an XC route without a timed speed section.
+</ParamField>
+
+<ParamField path="version" type="int" required>
+  The format version this task declares. The full JSON format defines version `1`. A mismatch is reported by `Task.validate()` as `ValidationRule.UNKNOWN_VERSION`.
+</ParamField>
+
+<ParamField path="turnpoints" type="list[Turnpoint]" required>
+  Ordered list of turnpoints from launch to goal. A CLASSIC task must contain at least a `TAKEOFF`, one `SSS`, one `ESS`, and a goal cylinder; a WAYPOINTS task has no speed-section markers.
+</ParamField>
+
+<ParamField path="earth_model" type="EarthModel | None">
+  The geodetic model used for distance calculations. `EarthModel.WGS84` or `EarthModel.FAI_SPHERE`. When absent, the consuming tool decides.
+</ParamField>
+
+<ParamField path="takeoff" type="Takeoff | None">
+  Optional takeoff window (open and close times). When absent, no takeoff window is enforced.
+</ParamField>
+
+<ParamField path="sss" type="SSS | None">
+  Start of Speed Section definition: type (race or elapsed-time), time gates, and optional close time. Required for a CLASSIC task to be valid.
+</ParamField>
+
+<ParamField path="goal" type="Goal | None">
+  Goal definition: type (cylinder or line), deadline, and optional elevated finish altitude. When absent, `Task.effective_goal` returns a `CYLINDER` goal.
+</ParamField>
+
+<ParamField path="extensions" type="list[dict]">
+  Root-level manufacturer extensions, preserved verbatim. Each entry carries a mandatory `id` key. Their order defines the order of per-turnpoint extension lists.
+</ParamField>
+
+<ParamField path="unknown" type="dict">
+  Keys present in the parsed file that the spec does not define, preserved verbatim so a round-trip does not silently discard them. Nothing here is interpreted.
+</ParamField>
+
+#### Methods and Properties
+
+<ResponseField name="effective_goal" type="Goal | None">
+  **Property.** The goal this task is flown to, with the format's default applied: an absent or type-less goal becomes `GoalType.CYLINDER`. Returns `None` only for a task with no turnpoints and no explicit goal. Use this wherever the *flown* goal is needed (cylinders, goal line); read `.goal` when you need to know exactly what the file said.
+</ResponseField>
+
+<ResponseField name="validate()" type="list[ValidationIssue]">
+  Checks the task against the spec's structural rules and returns one `ValidationIssue` per violation. Returns an empty list for a valid task. Does not raise; pass `strict=True` to `parse_task()` or `load_task()` to raise `TaskValidationError` instead.
+</ResponseField>
+
+<ResponseField name="to_json()" type="str">
+  Serializes the task to a compact JSON string suitable for writing to an `.xctsk` file.
+</ResponseField>
+
+<ResponseField name="to_qr_code_task()" type="QRCodeTask">
+  Converts to the compact QR code task format (`QRCodeTask`). Triggers a lazy import of `pyxctsk.qrcode.conversion` to avoid a circular dependency at module level.
+</ResponseField>
+
+<ResponseField name="is_ess_goal()" type="bool">
+  Returns `True` if the task's last turnpoint carries the `ESS` role — the standard arrangement for a CLASSIC task where ESS and goal coincide.
+</ResponseField>
+
+---
+
+### `Turnpoint`
+
+One point in the task route. Every turnpoint pairs a named waypoint with a cylinder radius; special roles (`TAKEOFF`, `SSS`, `ESS`) are marked with `type`.
+
+<ParamField path="radius" type="int" required>
+  Cylinder radius in metres. `0` is valid for XC/Waypoints tasks where each point is the location itself. Negative radii are flagged by `Task.validate()`.
+</ParamField>
+
+<ParamField path="waypoint" type="Waypoint" required>
+  The geographic position and name of this turnpoint.
+</ParamField>
+
+<ParamField path="type" type="TurnpointType | None">
+  Role in the task: `TAKEOFF`, `SSS`, `ESS`, or `None` for an unmarked cylinder. `TurnpointType.NONE` (the empty string) and `None` are treated equivalently by the serializer.
+</ParamField>
+
+<ParamField path="extensions" type="list[dict]">
+  Per-turnpoint manufacturer extension data, in the same order as the root `Task.extensions` list. The `id` key must not appear here — it belongs to the root entry only.
+</ParamField>
+
+<ParamField path="unknown" type="dict">
+  Unrecognised keys from the wire, preserved verbatim.
+</ParamField>
+
+---
+
+### `Waypoint`
+
+The geographic anchor of a turnpoint: a named point with coordinates and altitude.
+
+<ParamField path="name" type="str" required>
+  Human-readable waypoint name as it appears in the task file.
+</ParamField>
+
+<ParamField path="lat" type="float" required>
+  Latitude in decimal degrees (WGS84 or FAI sphere, depending on `Task.earth_model`).
+</ParamField>
+
+<ParamField path="lon" type="float" required>
+  Longitude in decimal degrees.
+</ParamField>
+
+<ParamField path="alt_smoothed" type="int" required>
+  Smoothed altitude in metres AMSL. The spec type is `number`; fractional values are rounded on parse to honour the `int` annotation.
+</ParamField>
+
+<ParamField path="description" type="str | None">
+  Optional free-text description. An empty string and an absent key are treated equivalently.
+</ParamField>
+
+<ParamField path="unknown" type="dict">
+  Unrecognised keys from the wire, preserved verbatim.
+</ParamField>
+
+---
+
+### `Takeoff`
+
+Optional takeoff-window specification, separate from the `TAKEOFF`-typed turnpoint.
+
+<ParamField path="time_open" type="TimeOfDay | None">
+  Time from which pilots may leave the takeoff area.
+</ParamField>
+
+<ParamField path="time_close" type="TimeOfDay | None">
+  Time after which the takeoff closes.
+</ParamField>
+
+<ParamField path="unknown" type="dict">
+  Unrecognised keys from the wire, preserved verbatim.
+</ParamField>
+
+---
+
+### `SSS`
+
+Start of Speed Section definition.
+
+<ParamField path="type" type="SSSType" required>
+  Whether the race timing rule is `RACE` (all pilots start at the same gate time) or `ELAPSED_TIME` (each pilot's clock starts individually).
+</ParamField>
+
+<ParamField path="direction" type="Direction">
+  **Obsolete.** Carried and re-emitted verbatim so older devices keep working, but never interpreted. Defaults to `Direction.EXIT` (the value all 22 reference tasks carry) when absent or empty.
+</ParamField>
+
+<ParamField path="time_gates" type="list[TimeOfDay]">
+  Ordered list of gate opening times. Written even when empty — the spec's SSS object always includes this key.
+</ParamField>
+
+<ParamField path="time_close" type="TimeOfDay | None">
+  Optional time after which no new start is allowed.
+</ParamField>
+
+<ParamField path="unknown" type="dict">
+  Unrecognised keys from the wire, preserved verbatim.
+</ParamField>
+
+---
+
+### `Goal`
+
+Goal definition. For `LINE` goals, the last turnpoint's radius equals half the total goal-line length.
+
+<ParamField path="type" type="GoalType | None">
+  `GoalType.CYLINDER` or `GoalType.LINE`. When absent, `Task.effective_goal` supplies `CYLINDER`.
+</ParamField>
+
+<ParamField path="deadline" type="TimeOfDay | None">
+  Latest time at which a valid goal crossing is scored.
+</ParamField>
+
+<ParamField path="finish_altitude" type="float | None">
+  Elevated goal height above the goal waypoint in metres AGL. Valid range is 0–1000 m (FAI S7F 2026 §6.2.3.2). When set, the goal turnpoint implicitly serves as the ESS; a conflict is reported by `Task.validate()` as `ValidationRule.ELEVATED_GOAL_IS_NOT_ESS`.
+</ParamField>
+
+<ParamField path="unknown" type="dict">
+  Unrecognised keys from the wire, preserved verbatim.
+</ParamField>
+
+<Note>
+  The legacy `lineLength` key that older versions of XCTrack wrote into the goal object is read and deliberately discarded on parse. It is always twice the last turnpoint's radius — which the spec already says that radius means — so echoing it back would preserve a redundant field. The `to_dict()` method never emits it.
+</Note>
+
+---
+
+### `TimeOfDay`
+
+A frozen dataclass representing a wall-clock time. Used for gate times, takeoff windows, goal deadlines, and SSS close times. **The only model class that validates on construction** — out-of-range values raise `InvalidTimeOfDayError` immediately.
+
+<ParamField path="hour" type="int" required>
+  Hour component, 0–23.
+</ParamField>
+
+<ParamField path="minute" type="int" required>
+  Minute component, 0–59.
+</ParamField>
+
+<ParamField path="second" type="int" required>
+  Second component, 0–59.
+</ParamField>
+
+#### Methods
+
+<ResponseField name="to_json_string()" type="str">
+  Returns the time as an `HH:MM:SSZ` string — the bare value as it appears in task JSON (without surrounding quotes).
+</ResponseField>
+
+<ResponseField name="__str__()" type="str">
+  Same as `to_json_string()`. A `TimeOfDay` drops directly into f-strings and `str()` calls as `HH:MM:SSZ`.
+</ResponseField>
+
+---
+
+### `ValidationIssue`
+
+A single violated structural rule, returned by `Task.validate()`. Frozen dataclass.
+
+<ResponseField name="rule" type="ValidationRule">
+  The specific rule that was broken. Use this for programmatic branching — the enum member name is stable; the `message` text is not.
+</ResponseField>
+
+<ResponseField name="message" type="str">
+  Human-readable description of the violation, including turnpoint indices where relevant. `str(issue)` returns this message directly.
+</ResponseField>
+
+---
+
+## Enums
+
+All enums extend both `str` and `Enum`, so they compare equal to their string values and serialise naturally to JSON.
+
+### `TaskType`
+
+<ResponseField name="CLASSIC" type='"CLASSIC"'>
+  A competition task with a timed speed section (SSS to ESS) and a goal.
+</ResponseField>
+<ResponseField name="WAYPOINTS" type='"W"'>
+  An XC/Waypoints route without a speed section. Wire value is `"W"`.
+</ResponseField>
+
+---
+
+### `TurnpointType`
+
+<ResponseField name="NONE" type='""'>
+  An unmarked cylinder. Wire value is the empty string.
+</ResponseField>
+<ResponseField name="TAKEOFF" type='"TAKEOFF"'>
+  The takeoff point — allowed only on the first turnpoint.
+</ResponseField>
+<ResponseField name="SSS" type='"SSS"'>
+  Start of Speed Section — must appear exactly once in a CLASSIC task, before ESS.
+</ResponseField>
+<ResponseField name="ESS" type='"ESS"'>
+  End of Speed Section — must appear exactly once in a CLASSIC task, after SSS.
+</ResponseField>
+
+---
+
+### `GoalType`
+
+<ResponseField name="CYLINDER" type='"CYLINDER"'>
+  A circular goal zone. The radius is the last turnpoint's `radius` field.
+</ResponseField>
+<ResponseField name="LINE" type='"LINE"'>
+  A goal line perpendicular to the optimized approach. The line's total length equals twice the last turnpoint's `radius`.
+</ResponseField>
+
+---
+
+### `SSSType`
+
+<ResponseField name="RACE" type='"RACE"'>
+  All pilots start at the same published gate time(s).
+</ResponseField>
+<ResponseField name="ELAPSED_TIME" type='"ELAPSED-TIME"'>
+  Each pilot's race time starts independently when they cross SSS. Wire value is `"ELAPSED-TIME"`.
+</ResponseField>
+
+---
+
+### `Direction`
+
+<ResponseField name="ENTER" type='"ENTER"'>
+  A crossing is scored when the pilot enters the cylinder.
+</ResponseField>
+<ResponseField name="EXIT" type='"EXIT"'>
+  A crossing is scored when the pilot exits the cylinder.
+</ResponseField>
+
+<Note>
+  `Direction` applies only to `SSS.direction`, which the spec marks **obsolete**. Readers must ignore it; writers must still emit a value. pyxctsk carries the value verbatim and defaults to `Direction.EXIT` when the field is absent. No library code acts on this field.
+</Note>
+
+---
+
+### `EarthModel`
+
+<ResponseField name="WGS84" type='"WGS84"'>
+  The WGS84 ellipsoid. Used by most modern scoring systems.
+</ResponseField>
+<ResponseField name="FAI_SPHERE" type='"FAI_SPHERE"'>
+  The FAI sphere (radius 6 371 km). Used for historical compatibility and some national leagues.
+</ResponseField>
+
+---
+
+### `ValidationRule`
+
+Each member names one structural rule the spec defines. Returned as `ValidationIssue.rule`.
+
+<ResponseField name="NO_TURNPOINTS" type="str">
+  The task has no turnpoints at all.
+</ResponseField>
+<ResponseField name="TAKEOFF_NOT_FIRST" type="str">
+  A `TAKEOFF`-typed turnpoint appears at an index other than 0.
+</ResponseField>
+<ResponseField name="SPECIAL_NOT_ONCE" type="str">
+  `SSS` or `ESS` does not appear exactly once (in a CLASSIC task).
+</ResponseField>
+<ResponseField name="SSS_AFTER_ESS" type="str">
+  The `SSS` turnpoint appears after `ESS` in the task order.
+</ResponseField>
+<ResponseField name="NEGATIVE_RADIUS" type="str">
+  A turnpoint has a negative cylinder radius.
+</ResponseField>
+<ResponseField name="UNKNOWN_VERSION" type="str">
+  The task declares a version number this format does not define (expected: `1` for full JSON, `2` for QR).
+</ResponseField>
+<ResponseField name="EXTENSION_WITHOUT_ROOT" type="str">
+  A turnpoint carries more extension entries than the root `extensions` list has — so some have no corresponding root entry.
+</ResponseField>
+<ResponseField name="EXTENSION_REPEATS_ID" type="str">
+  A turnpoint extension includes an `id` key, which belongs only in the root entry.
+</ResponseField>
+<ResponseField name="FINISH_ALTITUDE_OUT_OF_RANGE" type="str">
+  `Goal.finish_altitude` is outside the 0–1000 m range permitted by FAI S7F 2026 §6.2.3.2.
+</ResponseField>
+<ResponseField name="ELEVATED_GOAL_IS_NOT_ESS" type="str">
+  The task declares an elevated goal (implicitly the ESS) but marks `ESS` on an earlier turnpoint — two contradictory statements about where race time is taken.
+</ResponseField>
+
+---
+
+## Building a Task from Scratch
+
+All model classes are plain dataclasses — construct them directly. The example below creates a minimal CLASSIC task with a race start, one intermediate turnpoint, and a cylinder goal.
+
+```python
+from pyxctsk import (
+    Direction,
+    EarthModel,
+    Goal,
+    GoalType,
+    SSS,
+    SSSType,
+    Task,
+    TaskType,
+    TimeOfDay,
+    Turnpoint,
+    TurnpointType,
+    Waypoint,
+)
+
+task = Task(
+    task_type=TaskType.CLASSIC,
+    version=1,
+    earth_model=EarthModel.WGS84,
+    turnpoints=[
+        # First turnpoint must be TAKEOFF for a valid CLASSIC task
+        Turnpoint(
+            radius=400,
+            waypoint=Waypoint(
+                name="D01",
+                lat=46.5194,
+                lon=8.0341,
+                alt_smoothed=2050,
+            ),
+            type=TurnpointType.TAKEOFF,
+        ),
+        # SSS cylinder — pilots start racing when they exit this
+        Turnpoint(
+            radius=3000,
+            waypoint=Waypoint(
+                name="B01",
+                lat=46.6200,
+                lon=8.1000,
+                alt_smoothed=1800,
+            ),
+            type=TurnpointType.SSS,
+        ),
+        # Unmarked intermediate cylinder
+        Turnpoint(
+            radius=1000,
+            waypoint=Waypoint(
+                name="TP1",
+                lat=46.7500,
+                lon=8.2500,
+                alt_smoothed=1600,
+            ),
+        ),
+        # ESS + goal coincide at the final cylinder
+        Turnpoint(
+            radius=2000,
+            waypoint=Waypoint(
+                name="GL",
+                lat=46.8300,
+                lon=8.1800,
+                alt_smoothed=1200,
+            ),
+            type=TurnpointType.ESS,
+        ),
+    ],
+    sss=SSS(
+        type=SSSType.RACE,
+        direction=Direction.EXIT,
+        time_gates=[TimeOfDay(12, 30, 0), TimeOfDay(13, 0, 0)],
+    ),
+    goal=Goal(
+        type=GoalType.CYLINDER,
+        deadline=TimeOfDay(19, 0, 0),
+    ),
+)
+
+# Validate before serialising
+issues = task.validate()
+if issues:
+    for issue in issues:
+        print(f"[{issue.rule.name}] {issue}")
+else:
+    # Write to an .xctsk file
+    with open("my_task.xctsk", "w", encoding="utf-8") as f:
+        f.write(task.to_json())
+    print("Task written to my_task.xctsk")
+```
+
+### Inspecting the effective goal
+
+`Task.effective_goal` applies the spec's CYLINDER default without mutating the object:
+
+```python
+from pyxctsk import Task, TaskType, Turnpoint, Waypoint
+
+# A task with no explicit goal
+task = Task(
+    task_type=TaskType.CLASSIC,
+    version=1,
+    turnpoints=[
+        Turnpoint(radius=400, waypoint=Waypoint("D01", 46.5, 8.0, 2000)),
+        Turnpoint(radius=3000, waypoint=Waypoint("B01", 46.6, 8.1, 1800)),
+        Turnpoint(radius=2000, waypoint=Waypoint("GL", 46.8, 8.2, 1200)),
+    ],
+)
+
+print(task.goal)           # None  — nothing was written
+print(task.effective_goal) # Goal(type=<GoalType.CYLINDER: 'CYLINDER'>, ...)
+
+# The original object is unchanged
+assert task.goal is None
+```
+
+### Serialization round-trip
+
+`to_json()` / `Task.from_json()` give a lossless round-trip — the output is byte-identical to the input for all 25 reference tasks:
+
+```python
+from pyxctsk import Task
+
+with open("task.xctsk", encoding="utf-8") as f:
+    original_json = f.read()
+
+task = Task.from_json(original_json)
+restored_json = task.to_json()
+
+# Both represent the same task
+assert task == Task.from_json(restored_json)
+```

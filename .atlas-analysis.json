@@ -1,0 +1,128 @@
+{
+  "projectType": "sdk-library",
+  "projectName": "pyxctsk",
+  "projectDescription": "A Python library and CLI for reading, writing, converting, and measuring XCTrack .xctsk competition task files used in paragliding and hang gliding.",
+  "theme": "luma",
+  "primaryColor": "#2563EB",
+  "lightColor": "#DBEAFE",
+  "darkColor": "#1E3A5F",
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart",
+              "installation"
+            ]
+          },
+          {
+            "group": "Guides",
+            "pages": [
+              "guides/parsing-tasks",
+              "guides/converting-tasks",
+              "guides/qr-codes",
+              "guides/distance-calculations",
+              "guides/exporting-maps"
+            ]
+          },
+          {
+            "group": "CLI Reference",
+            "pages": [
+              "cli/overview",
+              "cli/convert",
+              "cli/distances"
+            ]
+          },
+          {
+            "group": "Concepts",
+            "pages": [
+              "concepts/task-format",
+              "concepts/s7f-distances",
+              "concepts/earth-models"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Front Door",
+            "pages": [
+              "api/parse-and-load",
+              "api/render-task"
+            ]
+          },
+          {
+            "group": "Data Model",
+            "pages": [
+              "api/model",
+              "api/exceptions"
+            ]
+          },
+          {
+            "group": "Distance & Route",
+            "pages": [
+              "api/distance",
+              "api/distance-report"
+            ]
+          },
+          {
+            "group": "Export",
+            "pages": [
+              "api/qrcode",
+              "api/export"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Parse XCTrack .xctsk task files from JSON, XCTSK:/XCTSKZ: URLs, and QR code images",
+    "Write tasks back to full JSON or compact QR format with byte-identical round-trips",
+    "Reference implementation of FAI Sporting Code S7F §7 optimized distance calculations",
+    "Generate and decode XCTSK: and XCTSKZ: (compressed) QR codes",
+    "Export tasks to KML and GeoJSON for mapping tools",
+    "Typed dataclass model with strict validation and lenient parsing modes",
+    "CLI tool for format conversion and distance reporting",
+    "Supports manufacturer extensions and unknown-key passthrough for full round-trip fidelity"
+  ],
+  "publicApiSurface": [
+    "parse_task(data, strict=False) -> Task",
+    "load_task(path, strict=False) -> Task",
+    "render_task(task, output_format, compressed=False) -> str | bytes",
+    "Task, Turnpoint, Waypoint, Takeoff, SSS, Goal (dataclasses)",
+    "TaskType, TurnpointType, GoalType, SSSType, EarthModel, Direction (enums)",
+    "Task.validate() -> list[ValidationIssue]",
+    "Task.to_json() -> str",
+    "Task.to_qr_code_task() -> QRCodeTask",
+    "QRCodeTask.from_string(text) -> QRCodeTask",
+    "QRCodeTask.to_string(compressed=False) -> str",
+    "DistanceReport.from_task(task) -> DistanceReport",
+    "DistanceReport.as_dict() -> dict",
+    "DistanceReport.as_text() -> str",
+    "MeasuredTask.from_task(task) -> MeasuredTask",
+    "calculate_task_distances(task) -> TaskDistanceTable",
+    "task_distances_from(task, route) -> TaskDistanceTable",
+    "optimized_distance(turnpoints) -> OptimizedRoute",
+    "geodesic_distance(lat1, lon1, lat2, lon2, earth_model) -> float",
+    "center_distance(task) -> float",
+    "distance_through_centers(task) -> float",
+    "center_distance_readings(task) -> list[CenterDistanceReading]",
+    "task_to_kml(task) -> str",
+    "generate_task_geojson(task) -> dict",
+    "generate_qrcode_image(text, size=...) -> PIL.Image",
+    "TaskDrawing.from_task(task) -> TaskDrawing",
+    "drawing_to_kml(drawing) -> str",
+    "drawing_to_geojson(drawing) -> dict",
+    "OUTPUT_FORMATS: dict[str, OutputFormat]",
+    "pyXCTSKError, EmptyInputError, InvalidFormatError, MalformedPayloadError, TaskValidationError, TooFewTurnpointsError, MissingQRCodeSupportError, MismatchedRouteError, UnmeasurableRouteError, InvalidTimeOfDayError",
+    "CLI: pyxctsk convert [input] --format [json|kml|geojson|png|qrcode-json] [-o output] [-z] [--strict]",
+    "CLI: pyxctsk distances [input] --format [json|text] [-o output] [--strict]"
+  ]
+}

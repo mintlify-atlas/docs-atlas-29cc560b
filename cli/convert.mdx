@@ -1,0 +1,129 @@
+---
+title: "pyxctsk convert: Convert Task Files Between Formats"
+sidebarTitle: "convert"
+description: "pyxctsk convert reads an XCTrack task from a file, URL string, or QR image and writes it in json, kml, geojson, png, or qrcode-json format."
+---
+
+`pyxctsk convert` is the general-purpose format converter for XCTrack task files. It accepts any supported input — a `.xctsk` JSON file, a file or stdin stream containing an `XCTSK:` or `XCTSKZ:` URL, or a QR code image — and writes the task in whichever output format you choose. Parsing is lenient by default so that a structurally imperfect task can still be inspected and converted; pass `--strict` to enforce the spec's structural rules instead.
+
+## Synopsis
+
+```bash
+pyxctsk convert [OPTIONS] [INPUT_FILE]
+```
+
+## Parameters
+
+<ParamField path="input_file" type="path" optional>
+  Path to the input file. The CLI auto-detects the format: `.xctsk` JSON files, files containing an `XCTSK:` or `XCTSKZ:` URL string, and QR code images (PNG, requires `pyxctsk[qr]`) are all accepted. Omit to read from stdin.
+</ParamField>
+
+<ParamField query="--format" type="string" default="json">
+  Output format. Must be one of `json`, `kml`, `geojson`, `png`, or `qrcode-json`. See the [Output formats](#output-formats) table below. The flag name inside the CLI is `output_format`.
+</ParamField>
+
+<ParamField query="--output / -o" type="path" optional>
+  Path of the output file to write. When omitted the converted payload is written to stdout. For `png`, binary bytes are written to `sys.stdout.buffer` so they can be redirected cleanly.
+</ParamField>
+
+<ParamField query="--compressed / -z" type="flag" default="false">
+  Emit the compressed `XCTSKZ:` (zlib + base64) QR encoding instead of the plain `XCTSK:` encoding. Only meaningful for the `png` and `qrcode-json` output formats; ignored by all others. Both `XCTSK:` and `XCTSKZ:` are always accepted on input regardless of this flag.
+</ParamField>
+
+<ParamField query="--strict" type="flag" default="false">
+  Reject a task that violates the spec's structural rules (TAKEOFF must be first; SSS and ESS must appear exactly once; SSS must precede ESS). Without this flag the CLI converts such a task anyway. A malformed *value* — a boolean latitude, a coordinate off the earth, a QR `z` that is not a polyline — is always rejected whether or not `--strict` is set.
+</ParamField>
+
+## Output formats
+
+| Format | `--format` value | Description | Media type | Binary? |
+|---|---|---|---|---|
+| XCTrack JSON | `json` | The native `.xctsk` file format — a full round-trip representation. | `application/xctsk` | No |
+| KML | `kml` | A KML document for Google Earth and similar mapping tools, with cylinders and the optimized route. | `application/vnd.google-earth.kml+xml` | No |
+| GeoJSON | `geojson` | A GeoJSON `FeatureCollection` of the same map content as the KML output. | `application/geo+json` | No |
+| PNG | `png` | A 1024 × 1024 pixel QR code image containing the `XCTSK:` (or `XCTSKZ:` with `-z`) payload. **Requires `pyxctsk[qr]`.** | `image/png` | Yes |
+| QR string | `qrcode-json` | The compact `XCTSK:` (or `XCTSKZ:` with `-z`) URL string, suitable for generating your own QR code. | `text/plain` | No |
+
+## Examples
+
+### Convert to JSON (default)
+
+```bash
+pyxctsk convert task.xctsk
+pyxctsk convert task.xctsk --format json
+```
+
+### Convert to KML and save to a file
+
+```bash
+pyxctsk convert task.xctsk --format kml -o task.kml
+```
+
+### Convert to GeoJSON
+
+```bash
+pyxctsk convert task.xctsk --format geojson -o task.geojson
+```
+
+### Render a QR code PNG
+
+```bash
+pyxctsk convert task.xctsk --format png -o task_qr.png
+```
+
+<Note>
+  The `png` output format requires the `qr` extra. Install it with `pip install "pyxctsk[qr]"`. Without it, this command fails with a message naming the missing extra.
+</Note>
+
+### Emit a compressed XCTSKZ: QR string
+
+```bash
+pyxctsk convert task.xctsk --format qrcode-json -z
+```
+
+### Render a compressed QR PNG
+
+```bash
+pyxctsk convert task.xctsk --format png -z -o task_qr_compressed.png
+```
+
+### Read from a QR code image
+
+```bash
+pyxctsk convert task_qr.png --format json
+```
+
+### Read from stdin and write to stdout
+
+```bash
+cat task.xctsk | pyxctsk convert --format kml
+```
+
+```bash
+pyxctsk convert --format png < task.xctsk > task_qr.png
+```
+
+### Read from a file containing an XCTSK: URL string
+
+```bash
+pyxctsk convert xctsk_url.txt --format json
+```
+
+## Strict vs. lenient parsing
+
+By default `convert` is lenient: a task that breaks one of the spec's structural rules — for example, a task missing an `ESS` turnpoint, or one with `SSS` appearing after `ESS` — is still parsed and converted. This lets you inspect and fix a malformed task without being blocked by the validator.
+
+Pass `--strict` to turn structural violations into hard errors:
+
+```bash
+pyxctsk convert task.xctsk --strict
+```
+
+<Warning>
+  Lenient mode covers only *structural* spec violations. A malformed *value* — a non-numeric latitude, a coordinate outside valid bounds, a QR `z` field that is not a polyline — is always rejected, even without `--strict`.
+</Warning>
+
+## Output encoding notes
+
+- Text outputs (JSON, KML, GeoJSON, QR string) are always written as UTF-8. When writing to a file, a trailing newline is added if the payload does not already end with one.
+- Binary output (`png`) is written as raw bytes. Stdout binary output goes to `sys.stdout.buffer`, so shell redirection (`> task.png`) works correctly.

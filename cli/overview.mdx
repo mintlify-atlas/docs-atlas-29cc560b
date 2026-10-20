@@ -1,0 +1,118 @@
+---
+title: "pyxctsk CLI: Convert and Measure Tasks from the Shell"
+sidebarTitle: "Overview"
+description: "The pyxctsk CLI provides two commands — convert and distances — for converting XCTrack task files between formats and reporting FAI S7F distances."
+---
+
+The `pyxctsk` command-line interface gives you two focused tools for working with XCTrack competition task files directly from your shell. `convert` reads any supported task representation and writes it out in your chosen format; `distances` measures the task and reports its FAI Sporting Code S7F §7.2 distances alongside the per-turnpoint optimized route that another implementation can diff against.
+
+## Installation
+
+<Steps>
+  <Step title="Install the core package">
+    The CLI is included with the library. Install from PyPI with pip:
+
+    ```bash
+    pip install pyxctsk
+    ```
+  </Step>
+  <Step title="Install the qr extra for QR image support (optional)">
+    Reading task data out of a QR code image (PNG) and writing one requires the `qr` extra:
+
+    ```bash
+    pip install "pyxctsk[qr]"
+    ```
+
+    Everything else — JSON, KML, GeoJSON, `XCTSK:`/`XCTSKZ:` strings — works without it.
+  </Step>
+</Steps>
+
+## Quick start
+
+```bash
+pyxctsk --help
+```
+
+```
+Usage: pyxctsk [OPTIONS] COMMAND [ARGS]...
+
+  pyxctsk: Convert task files between formats.
+
+  Examples:
+    pyxctsk convert task.xctsk --format json
+    pyxctsk convert task.xctsk --format kml -o task.kml
+    pyxctsk convert --format png < task.xctsk > task.png
+    pyxctsk convert task.xctsk --format qrcode-json -z
+    pyxctsk convert task.xctsk --strict
+    pyxctsk distances task.xctsk --format text
+
+  Formats:
+    Input:  .xctsk files, XCTSK:/XCTSKZ: URLs, QR code images (PNG)
+    Output: JSON, GeoJSON, KML, QR codes (PNG or XCTSK:/XCTSKZ: URL)
+
+  See README for more examples and details.
+
+Options:
+  --version  Show the version and exit.
+  --help     Show this message and exit.
+
+Commands:
+  convert    Convert an XCTrack task between supported formats.
+  distances  Report a task's FAI S7F distances and optimized route.
+```
+
+## Commands
+
+| Command | What it does |
+|---|---|
+| `convert` | Read a task from any supported input and write it as JSON, KML, GeoJSON, PNG, or a `XCTSK:`/`XCTSKZ:` QR string. |
+| `distances` | Measure a task's FAI S7F §7.2 optimized distances and print the per-turnpoint route in JSON or human-readable text. |
+
+## Supported input formats
+
+The CLI (and the underlying `parse_task` function) auto-detects the input format — you never specify what you're feeding in:
+
+| Input type | Example |
+|---|---|
+| `.xctsk` JSON file | `task.xctsk` |
+| File containing an `XCTSK:` or `XCTSKZ:` URL string | `task_url.txt` |
+| QR code image file (PNG) | `task_qr.png` — requires `pyxctsk[qr]` |
+| Any of the above piped to stdin | `cat task.xctsk \| pyxctsk convert …` |
+
+## Reading from stdin
+
+Both commands accept input on stdin when no positional file argument is given. This lets you pipe tasks through a shell pipeline:
+
+```bash
+# Pipe a task file through convert
+cat task.xctsk | pyxctsk convert --format kml
+
+# Pipe into distances
+cat task.xctsk | pyxctsk distances --format text
+
+# Redirect from a file
+pyxctsk convert --format json < task.xctsk
+```
+
+<Note>
+  If stdin is an interactive terminal and no input file is provided, the CLI exits with an error message rather than hanging.
+</Note>
+
+## Version
+
+```bash
+pyxctsk --version
+```
+
+```
+pyxctsk 0.5.0
+```
+
+<CardGroup cols={2}>
+  <Card title="convert" icon="arrows-rotate" href="/cli/convert">
+    Convert a task between JSON, KML, GeoJSON, PNG, and QR string formats.
+  </Card>
+  <Card title="distances" icon="ruler" href="/cli/distances">
+    Report FAI S7F §7.2 task distances and the optimized per-turnpoint route.
+  </Card>
+</CardGroup>

@@ -1,0 +1,272 @@
+---
+title: "Export Functions: KML, GeoJSON, and TaskDrawing"
+sidebarTitle: "Export"
+description: "Export XCTrack tasks to KML and GeoJSON with task_to_kml, generate_task_geojson, drawing_to_kml, drawing_to_geojson, and TaskDrawing."
+---
+
+pyxctsk can export a competition task as a **KML document** (for Google Earth, GIS tools, and compatible flight instruments) or as a **GeoJSON FeatureCollection** (for web maps and any RFC 7946-aware tool). Both outputs include the same content: coloured cylinder outlines for every turnpoint, a centre marker for each, the optimized route as a polyline, and — for LINE-type goals — the goal line and its control zone polygon.
+
+The two-function approach lets you derive the visual representation once through `TaskDrawing` and render it to both formats without re-running the route optimizer. When you only need one format, the single-call convenience functions `task_to_kml` and `generate_task_geojson` handle everything internally.
+
+---
+
+## `TaskDrawing`
+
+```python
+from pyxctsk.export.common import TaskDrawing
+```
+
+`TaskDrawing` is a frozen dataclass that captures everything both export writers need to draw a task: which turnpoints to render, whether a goal line replaces the last cylinder, and the already-optimized route. Building it once and handing it to both `drawing_to_kml` and `drawing_to_geojson` guarantees that the KML and GeoJSON outputs are geometrically consistent — they draw the **same** route, the **same** goal line, and make the **same** decision about which cylinder is replaced.
+
+<Note>
+  A `TaskDrawing` is a snapshot. Build it after the task is final: if you modify the task after calling `TaskDrawing.from_task`, the drawing still reflects the original state.
+</Note>
+
+### Fields
+
+<ResponseField name="turnpoints" type="tuple[Turnpoint, ...]">
+  The turnpoints to draw, in task order. When a LINE-type goal generates a goal line, the **last turnpoint is dropped** from this tuple — the goal line replaces its cylinder. For CYLINDER goals and tasks without a goal line, all task turnpoints are present.
+</ResponseField>
+
+<ResponseField name="goal_line" type="GoalLine | None">
+  The task's goal line for LINE-type goals, or `None` when the goal is a CYLINDER or no goal section was stated. When non-`None`, both writers render it as a two-point `LineString` plus a filled `Polygon` for the control zone.
+</ResponseField>
+
+<ResponseField name="measured" type="MeasuredTask">
+  The task paired with the optimized route through its cylinders. Access the route alone via the `route` property, or pass `measured` to `task_distances_from` to compute per-leg distances from the same measurement without re-optimizing.
+</ResponseField>
+
+### Properties
+
+<ResponseField name="task" type="Task">
+  The task being drawn. Read-through to `measured.task` — there is no separate copy, so the task and the route always agree.
+</ResponseField>
+
+<ResponseField name="route" type="OptimizedRoute">
+  The optimized route through the task's cylinders. Read-through to `measured.route`.
+</ResponseField>
+
+---
+
+### `TaskDrawing.from_task`
+
+```python
+@classmethod
+def from_task(cls, task: Task) -> TaskDrawing
+```
+
+Derive the drawing for a task, running the route optimizer exactly once. The goal line is derived from the optimized route (under S7F 2025+ rules, the line is oriented against the route's last control-zone touch point), so the optimizer must run before the line can be oriented.
+
+<ParamField path="task" type="Task" required>
+  The task to derive a drawing for. The task must be final — the drawing is not updated if the task is modified afterwards.
+</ParamField>
+
+**Returns** `TaskDrawing`.
+
+---
+
+## `task_to_kml`
+
+```python
+from pyxctsk.export.kml import task_to_kml
+
+def task_to_kml(task: Task) -> str
+```
+
+Convert a `Task` to a KML document string. This is the single-call convenience function: it calls `TaskDrawing.from_task(task)` internally and then renders through `drawing_to_kml`. Use it when you only need KML output.
+
+<ParamField path="task" type="Task" required>
+  The task to export.
+</ParamField>
+
+**Returns** `str` — a complete KML document.
+
+The KML output includes:
+
+- **Cylinder polygons** — one `<Polygon>` per drawn turnpoint, extruded to 5 000 m AGL, with a type-coded fill colour (takeoff = dark blue, SSS = deep red, ESS = orange, goal = red, ordinary = teal).
+- **Centre points** — one `<Point>` per turnpoint, styled to match its cylinder.
+- **Optimized route** — a `<LineString>` clamped to the ground, in the route colour (red), omitted when the task has fewer than two turnpoints.
+- **Goal line** — for LINE goals, a `<LineString>` at 500 m AGL in green, plus a filled cyan `<Polygon>` for the control zone.
+
+<Warning>
+  KML is XML 1.0. Turnpoint names and descriptions that contain non-XML characters (C0 control codes other than tab, newline, and carriage return) cannot be represented as XML character data. pyxctsk replaces each such character with **U+FFFD REPLACEMENT CHARACTER** (`?`) rather than raising an exception, so a stray control character costs a glyph rather than the whole map.
+</Warning>
+
+---
+
+## `drawing_to_kml`
+
+```python
+from pyxctsk.export.kml import drawing_to_kml
+
+def drawing_to_kml(drawing: TaskDrawing) -> str
+```
+
+Render an already-derived `TaskDrawing` as KML. Use this when you need both KML and GeoJSON output, so the optimizer runs once and both formats share the same drawing.
+
+<ParamField path="drawing" type="TaskDrawing" required>
+  The drawing to render. Typically the output of `TaskDrawing.from_task(task)`.
+</ParamField>
+
+**Returns** `str` — a complete KML document. The content is identical to what `task_to_kml` produces for the same task.
+
+---
+
+## `generate_task_geojson`
+
+```python
+from pyxctsk.export.geojson import generate_task_geojson
+
+def generate_task_geojson(task: Task) -> dict[str, Any]
+```
+
+Generate a GeoJSON FeatureCollection from a `Task`. This is the single-call convenience function: it calls `TaskDrawing.from_task(task)` internally and renders through `drawing_to_geojson`. Use it when you only need GeoJSON output.
+
+<ParamField path="task" type="Task" required>
+  The task to export.
+</ParamField>
+
+**Returns** `dict` — a GeoJSON `FeatureCollection` with `"type": "FeatureCollection"` and a `"features"` array.
+
+The FeatureCollection includes these feature types:
+
+| `properties.type` | Geometry | Description |
+|---|---|---|
+| `"cylinder"` | `Point` | Turnpoint centre with `radius` and `color` properties for client-side circle rendering |
+| `"optimized_route"` | `LineString` | The optimized route; omitted when fewer than two turnpoints |
+| `"goal_line"` | `LineString` | Goal line for LINE goals, with `length` (m) property |
+| `"goal_control_zone"` | `Polygon` | Control zone around the goal line, with `radius` (m) property |
+
+Every feature includes `"name"`, `"description"`, colour properties (`"color"`, `"stroke"`, `"fill"`, etc.), and weight/opacity hints for Leaflet and similar renderers.
+
+---
+
+## `drawing_to_geojson`
+
+```python
+from pyxctsk.export.geojson import drawing_to_geojson
+
+def drawing_to_geojson(drawing: TaskDrawing) -> dict[str, Any]
+```
+
+Generate a GeoJSON FeatureCollection from an already-derived `TaskDrawing`. Use alongside `drawing_to_kml` to export to both formats from one drawing without re-running the optimizer.
+
+<ParamField path="drawing" type="TaskDrawing" required>
+  The drawing to render. Typically the output of `TaskDrawing.from_task(task)`.
+</ParamField>
+
+**Returns** `dict` — a GeoJSON `FeatureCollection`. Content is identical to what `generate_task_geojson` produces for the same task.
+
+---
+
+## Code examples
+
+### Export to KML (one format)
+
+```python
+from pyxctsk import load_task
+from pyxctsk.export.kml import task_to_kml
+
+task = load_task("competition.xctsk")
+kml_str = task_to_kml(task)
+
+with open("task.kml", "w", encoding="utf-8") as f:
+    f.write(kml_str)
+```
+
+### Export to GeoJSON (one format)
+
+```python
+import json
+from pyxctsk import load_task
+from pyxctsk.export.geojson import generate_task_geojson
+
+task = load_task("competition.xctsk")
+geojson = generate_task_geojson(task)
+
+with open("task.geojson", "w", encoding="utf-8") as f:
+    json.dump(geojson, f, indent=2)
+```
+
+### Export to both formats with a single optimizer run
+
+<CodeGroup>
+
+```python KML + GeoJSON
+import json
+from pyxctsk import load_task
+from pyxctsk.export.common import TaskDrawing
+from pyxctsk.export.kml import drawing_to_kml
+from pyxctsk.export.geojson import drawing_to_geojson
+
+task = load_task("competition.xctsk")
+
+# Optimizer runs exactly once
+drawing = TaskDrawing.from_task(task)
+
+kml_str = drawing_to_kml(drawing)
+geojson = drawing_to_geojson(drawing)
+
+with open("task.kml", "w", encoding="utf-8") as f:
+    f.write(kml_str)
+
+with open("task.geojson", "w", encoding="utf-8") as f:
+    json.dump(geojson, f, indent=2)
+```
+
+```python Inspect the drawing first
+from pyxctsk import load_task
+from pyxctsk.export.common import TaskDrawing
+
+task = load_task("competition.xctsk")
+drawing = TaskDrawing.from_task(task)
+
+# Check what will be drawn
+print(f"Turnpoints to draw: {len(drawing.turnpoints)}")
+print(f"Goal line present:  {drawing.goal_line is not None}")
+
+if drawing.goal_line:
+    print(f"Goal line length:   {drawing.goal_line.length:.0f} m")
+
+coords = drawing.route_coordinates_lon_lat()
+if coords:
+    print(f"Route points:       {len(coords)}")
+```
+
+</CodeGroup>
+
+### Serve GeoJSON from a web handler
+
+```python
+import json
+from pyxctsk import parse_task
+from pyxctsk.export.geojson import generate_task_geojson
+
+def handle_request(body: bytes) -> tuple[str, str]:
+    """Parse a task payload and return (content_type, body)."""
+    task = parse_task(body)
+    geojson = generate_task_geojson(task)
+    return "application/geo+json", json.dumps(geojson)
+```
+
+### Iterate over drawn turnpoints
+
+```python
+from pyxctsk import load_task
+from pyxctsk.export.common import TaskDrawing
+
+task = load_task("competition.xctsk")
+drawing = TaskDrawing.from_task(task)
+
+for i, tp in enumerate(drawing.turnpoints):
+    label = drawing.label_of(tp, i)
+    color = drawing.color_of(tp).hex   # e.g. "#ff0000"
+    desc  = drawing.description_of(tp) # e.g. "Type: SSS, Radius: 3000m"
+    outline = drawing.outline_of(tp)   # list of (lon, lat) tuples, closed ring
+
+    print(f"{i+1:2d}. {label:20s}  {color}  {desc}")
+```
+
+<Tip>
+  `TaskDrawing` helper methods — `label_of`, `color_of`, `description_of`, `outline_of`, `role_of` — are the canonical answers for how a turnpoint should be presented. Both KML and GeoJSON writers use exactly these methods, so any custom renderer built on them will agree with the built-in outputs.
+</Tip>

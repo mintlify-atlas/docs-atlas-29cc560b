@@ -1,0 +1,189 @@
+---
+title: "parse_task and load_task: Reading XCTrack Tasks"
+sidebarTitle: "parse_task / load_task"
+description: "parse_task reads a task payload from bytes or string; load_task reads from a file path. Both return a Task and support strict validation mode."
+---
+
+`parse_task` and `load_task` are the two entry points for reading XCTrack competition tasks into Python. `parse_task` accepts a payload — raw bytes or a string — and auto-detects which of the four supported formats it is in. `load_task` wraps it for the common case where you have a file path: it opens the file in binary mode and hands the bytes straight to `parse_task`. Both functions return a `Task` object and accept an optional `strict` flag that enables spec-conformance validation before the task is returned.
+
+---
+
+## `parse_task`
+
+```python
+def parse_task(data: bytes | str, strict: bool = False) -> Task
+```
+
+Parses an XCTrack task from a payload in any supported format. The input is auto-detected by trying an ordered list of four `FormatAdapter` instances. Each adapter independently answers *"does this input look like my format?"* and, if so, *"can I read it?"* — so a recognised input that cannot be parsed raises a descriptive error rather than silently falling through to the wrong adapter.
+
+<Note>
+  `parse_task` **never touches the filesystem**. A bare string is always treated as the payload itself. If you pass a path-like object (`pathlib.Path`, etc.) a `TypeError` is raised immediately. Use `load_task` when you have a file path.
+</Note>
+
+### Parameters
+
+<ParamField path="data" type="bytes | str" required>
+  The task payload. Accepted forms:
+  - A JSON string or bytes containing a full `.xctsk` task document
+  - An `XCTSK:` or `XCTSKZ:` URL string or bytes (the compact QR code encoding)
+  - A JSON string or bytes in the QR-code JSON format
+  - The raw bytes of a PNG or JPEG image that contains an `XCTSK:` QR code
+</ParamField>
+
+<ParamField path="strict" type="bool" default="False">
+  When `True`, the parsed payload is validated against the spec's structural rules before being returned. Validation is performed on the payload **as it arrived** — through `Task.validate()` for the full format or `QRCodeTask.validate()` for the compact format — so any violation is reported against the original input rather than the converter's output. When `False` (the default), a malformed task can still be read, inspected, and converted.
+</ParamField>
+
+### Returns
+
+`Task` — the parsed task object.
+
+### Exceptions
+
+| Exception | When raised |
+|---|---|
+| `EmptyInputError` | The `data` argument is empty (`b""` or `""`). |
+| `InvalidFormatError` | No adapter recognised the input, or the recognising adapter could not read it. The message names the specific failure: JSON that is not a task, an image with no embedded `XCTSK:` code, a recognised URL scheme with a malformed payload, or a missing `pyxctsk[qr]` install. |
+| `TaskValidationError` | `strict=True` and the task violates one or more spec rules. `e.issues` holds a list of `ValidationIssue` objects, each naming the broken rule. |
+| `TypeError` | A `PathLike` object was passed. `parse_task` reads payloads; use `load_task` for paths. |
+
+---
+
+## `load_task`
+
+```python
+def load_task(path: str | os.PathLike[str], strict: bool = False) -> Task
+```
+
+Reads a task file from disk and parses it. The file is always opened in binary mode and its bytes are passed directly to `parse_task`, so the file extension is irrelevant — a `.xctsk` document, a plain-text file containing an `XCTSK:` URL, and a QR code image are all read identically, by what they contain.
+
+<Note>
+  `load_task` accepts any file format **by content, not by extension**. A file named `task.txt` that contains an `XCTSK:` URL is parsed just as correctly as one named `task.xctsk`.
+</Note>
+
+### Parameters
+
+<ParamField path="path" type="str | os.PathLike[str]" required>
+  Path to the task file to read. Accepts any `str` or `os.PathLike` (e.g. a `pathlib.Path`). The file is opened in binary mode.
+</ParamField>
+
+<ParamField path="strict" type="bool" default="False">
+  Passed through to `parse_task`. See the `parse_task` documentation above for details.
+</ParamField>
+
+### Returns
+
+`Task` — the parsed task object.
+
+### Exceptions
+
+| Exception | When raised |
+|---|---|
+| `InvalidFormatError` | The file could not be opened (the OS error message is included), or the file's contents are not a recognisable task format. |
+| `EmptyInputError` | The file exists but is empty. |
+| `TaskValidationError` | `strict=True` and the task violates one or more spec rules. |
+
+---
+
+## Input auto-detection
+
+`parse_task` tries each of the following `FormatAdapter` instances in order. At most one adapter will recognise any given input, so the ordering is a tie-breaker for unusual payloads — not the mechanism that keeps adapters out of each other's inputs. A recognised input that cannot be parsed raises immediately with a specific message; it never falls through to the next adapter.
+
+| # | Adapter name | Recognises |
+|---|---|---|
+| 1 | **XCTSK: URL** | Input whose bytes start with `XCTSK:` or `XCTSKZ:` |
+| 2 | **task JSON** | JSON object containing at least one key that only the full task format has |
+| 3 | **QR JSON** | JSON object containing at least one key that only the QR format has |
+| 4 | **QR image** | Bytes starting with PNG (`\x89PNG`) or JPEG (`\xff\xd8\xff`) magic |
+
+---
+
+## Code examples
+
+### Full task JSON (`.xctsk` document)
+
+<CodeGroup>
+
+```python From a file
+from pyxctsk import load_task
+
+task = load_task("competition.xctsk")
+print(task.turnpoints)
+```
+
+```python From bytes or string
+from pyxctsk import parse_task
+
+with open("competition.xctsk", "rb") as f:
+    task = parse_task(f.read())
+```
+
+</CodeGroup>
+
+### `XCTSK:` URL (compact QR encoding)
+
+```python
+from pyxctsk import parse_task
+
+url = "XCTSK:eyJ0IjoxLCJlYXJ0aCI6IkZBSSIsInR1cm5wb2ludHMiOlt7..."
+task = parse_task(url)
+```
+
+### Compressed `XCTSKZ:` URL
+
+```python
+from pyxctsk import parse_task
+
+url = "XCTSKZ:eJyLjgUAARUBFQ=="  # zlib + base64 encoded payload
+task = parse_task(url)
+```
+
+### QR-code JSON
+
+```python
+from pyxctsk import parse_task
+import json
+
+qr_doc = {"t": 1, "earth": "FAI", "turnpoints": [...]}
+task = parse_task(json.dumps(qr_doc))
+```
+
+### QR code image (PNG or JPEG)
+
+<Note>
+  Reading QR code images requires the optional `qr` dependency group. Install it with `pip install 'pyxctsk[qr]'`. Without it, `parse_task` raises `InvalidFormatError` with a message that names the missing install rather than reporting the image as an unknown format.
+</Note>
+
+```python
+from pyxctsk import parse_task
+
+with open("task_qr.png", "rb") as f:
+    task = parse_task(f.read())
+```
+
+---
+
+## Lenient vs strict mode
+
+By default both functions operate in **lenient mode**: a task that contains structural violations — such as a missing goal turnpoint, or turnpoints in an order the spec disallows — is still parsed and returned. This lets you read, inspect, and fix malformed tasks programmatically.
+
+Enable **strict mode** by passing `strict=True`. The payload is validated as it arrived, before any format conversion takes place, and a `TaskValidationError` is raised if any spec rule is broken. The exception's `issues` attribute holds a typed list of `ValidationIssue` objects, each naming the specific rule that was violated.
+
+```python
+from pyxctsk import load_task
+from pyxctsk.exceptions import TaskValidationError
+
+# Lenient (default): always returns a Task, even if malformed
+task = load_task("task.xctsk")
+
+# Strict: raises TaskValidationError if any spec rule is broken
+try:
+    task = load_task("task.xctsk", strict=True)
+except TaskValidationError as e:
+    for issue in e.issues:
+        print(f"Rule violated: {issue.rule} — {issue}")
+```
+
+<Tip>
+  Use lenient mode when importing tasks from third-party sources (where spec conformance isn't guaranteed) and strict mode when producing tasks that will be published for competition use.
+</Tip>

@@ -1,0 +1,252 @@
+---
+title: "FAI S7F Distance Calculations with pyxctsk"
+sidebarTitle: "Distance Calculations"
+description: "Compute FAI S7F optimized task distances, speed-section distances, and centre distances using DistanceReport and MeasuredTask."
+---
+
+pyxctsk implements FAI Sporting Code S7F distance calculations and serves as an open-source reference implementation — a task's published distance should be something anyone can reproduce, not something that depends on which device the task committee used. The core objects are `DistanceReport`, which holds every number pyxctsk publishes about a task, and `MeasuredTask`, which binds a task to its optimized route.
+
+## What pyxctsk calculates
+
+<CardGroup cols={2}>
+<Card title="§7.2 Task Distance" icon="route">
+The optimized path from launch to goal — the shortest route touching every control zone in order. This is the number S7F defines as "task distance".
+</Card>
+<Card title="§7.2 Speed Section Distance" icon="stopwatch">
+A separate launch-to-ESS optimization, minus its pre-start portion. Defined only when the task has both an SSS and an ESS. S7F calls this "speed section distance".
+</Card>
+<Card title="Distance Through Centres" icon="circle-dot">
+The polyline through every turnpoint centre, launch to goal. **S7F does not define this number** — it is a task-board convention. pyxctsk proposes a specific reading and names the alternatives.
+</Card>
+<Card title="Optimized Route Points" icon="map-pin">
+The exact crossing coordinates on each control-zone boundary. Exchange these rather than totals: a total says two implementations disagree; the points say where.
+</Card>
+</CardGroup>
+
+## DistanceReport — everything about one task
+
+`DistanceReport.from_task(task)` is the main entry point. It runs the optimizer once and populates all distance fields lazily.
+
+```python
+from pyxctsk import load_task
+from pyxctsk.distance import DistanceReport
+
+task = load_task("task.xctsk")
+report = DistanceReport.from_task(task)
+
+# S7F §7.2 distances, in metres
+print(report.task_distance_m)           # e.g. 92002.3
+print(report.speed_section_distance_m)  # None if no SSS/ESS pair
+
+# The convention S7F does not define
+print(report.center_distance_m)         # e.g. 321440.1
+print(report.center_distance_reading)   # "LAUNCH_TO_GOAL"
+```
+
+### Human-readable text output
+
+```python
+print(report.as_text())
+```
+
+```
+pyxctsk 0.5.0  |  FAI S7F 2026 V1.0  |  earth model: WGS84
+
+  task distance (§7.2)             92.002 km
+  speed section (§7.2)             86.761 km
+  through centres                 321.440 km   [LAUNCH_TO_GOAL]
+
+  'through centres' is NOT defined by S7F. Other readings of it:
+    LAUNCH_TO_GOAL              321.440 km
+    LAUNCH_TO_GOAL_BOUNDARY     321.240 km
+    START_TO_GOAL               281.568 km
+
+  optimized route:
+     0 D01        TAKEOFF  r=     0 m    4.476050  -76.153519     0.000 km
+     1 X09        SSS      r= 37000 m    4.502847  -76.137677     3.446 km
+     ...
+```
+
+### Machine-readable JSON output
+
+`as_dict()` is the surface another implementation diffs against. It includes the library version, the S7F edition, every reading of the centre distance, and the optimized crossing coordinates for every turnpoint.
+
+```python
+import json
+
+report_dict = report.as_dict()
+print(json.dumps(report_dict, indent=2))
+```
+
+The keys you will use most often:
+
+| Key | Description |
+|---|---|
+| `pyxctsk_version` | Library version used to compute this report |
+| `s7f_edition` | S7F edition the calculations are audited against |
+| `earth_model` | `"WGS84"` or `"FAI sphere"` |
+| `task_distance_m` | S7F §7.2 optimized task distance, in metres |
+| `speed_section_distance_m` | S7F §7.2 speed section distance, or `null` |
+| `center_distance_m` | Centre distance under `PROPOSED_READING` |
+| `center_distance_readings_m` | All readings, keyed by name |
+| `route` | List of per-turnpoint rows with crossing coordinates |
+| `notes` | Descriptions of what each number is and which rule defines it |
+
+## MeasuredTask — task paired with its route
+
+`MeasuredTask` binds a `Task` to the `OptimizedRoute` through its cylinders. Every module that needs both takes this one value, making a mismatched pair unrepresentable. Build one with `MeasuredTask.from_task(task)`.
+
+```python
+from pyxctsk.distance import MeasuredTask
+
+measured = MeasuredTask.from_task(task)
+
+# Total optimized distance
+print(measured.total_m)            # metres
+
+# Cumulative distances per turnpoint
+cumulative = measured.cumulative_m()
+for i, dist in enumerate(cumulative):
+    print(f"  TP{i}: {dist/1000:.3f} km")
+
+# The underlying task and route
+print(measured.task.task_type)
+print(len(measured.route.points))  # one point per turnpoint
+```
+
+`MeasuredTask` is also what `DistanceReport` and `TaskDrawing` (the export package) take. If you already have one, pass it directly to avoid running the optimizer twice:
+
+```python
+from pyxctsk.distance import DistanceReport
+
+report = DistanceReport.from_measured_task(measured)
+```
+
+## Per-Leg Distance Table
+
+`calculate_task_distances(task)` and `task_distances_from(measured)` return a `TaskDistanceTable` — the numbers a task board displays, rounded to 0.1 km.
+
+```python
+from pyxctsk.distance import calculate_task_distances, task_distances_from
+
+# From a task (runs the optimizer internally)
+table = calculate_task_distances(task)
+
+# From an already-measured task (no second optimizer run)
+table = task_distances_from(measured)
+
+print(f"Optimized:   {table.optimized_distance_km} km")
+print(f"Centres:     {table.center_distance_km} km")
+print(f"Savings:     {table.savings_km} km ({table.savings_percent:.1f}%)")
+
+# Per-turnpoint rows
+for row in table.turnpoints:
+    print(f"  {row.index:2d} {row.name:<12} r={row.radius:>6} m"
+          f"  opt: {row.cumulative_optimized_km} km"
+          f"  ctr: {row.cumulative_center_km} km")
+
+# Or as a dict (the format this has always published)
+table_dict = table.as_dict()
+```
+
+## Low-Level: optimized_distance()
+
+For cases where you only need the total optimized distance and do not want a `MeasuredTask` or a full report, `optimized_distance()` is available. It takes a sequence of `TurnpointGeometry` objects (typically from `task_to_turnpoints`).
+
+```python
+from pyxctsk.distance import optimized_distance
+from pyxctsk.distance.measured_task import task_to_turnpoints
+
+turnpoints = task_to_turnpoints(task)
+dist_m = optimized_distance(turnpoints, earth_model=task.earth_model)
+print(f"{dist_m / 1000:.3f} km")
+```
+
+## Distance Through Centres
+
+The centre distance is a task-board display convention. **S7F does not define it.** pyxctsk proposes one reading (`LAUNCH_TO_GOAL`) and keeps two alternatives so a vendor whose board disagrees can diagnose whether the cause is a different reading or a different bug.
+
+```python
+from pyxctsk.distance import (
+    center_distance,
+    center_distance_readings,
+    distance_through_centers,
+    CenterDistanceReading,
+    PROPOSED_READING,
+)
+
+# The proposed reading: every centre, launch to goal
+dist = center_distance(task)
+
+# A specific reading
+dist_boundary = center_distance(task, CenterDistanceReading.LAUNCH_TO_GOAL_BOUNDARY)
+dist_from_sss = center_distance(task, CenterDistanceReading.START_TO_GOAL)
+# START_TO_GOAL is None for tasks without SSS
+
+# All readings at once (for diagnostics)
+readings = center_distance_readings(task)
+for name, value in readings.items():
+    km = f"{value/1000:.3f} km" if value is not None else "n/a"
+    print(f"  {name:<30} {km}")
+```
+
+The three readings and when to use them:
+
+| Reading | Description |
+|---|---|
+| `LAUNCH_TO_GOAL` | Every centre, launch through goal. **pyxctsk's proposed reading.** Agrees with published reference values to within 49 m (inside 0.1 km display rounding). |
+| `LAUNCH_TO_GOAL_BOUNDARY` | Same, minus the goal's effective radius. Defensible on the grounds that both published numbers should measure to the same finish point. |
+| `START_TO_GOAL` | From the SSS centre rather than launch. `None` for tasks without an SSS. |
+
+For the primitive — computing the polyline sum over an explicit list of turnpoints — use `distance_through_centers()`:
+
+```python
+from pyxctsk.distance import distance_through_centers
+from pyxctsk.distance.measured_task import task_to_turnpoints
+
+turnpoints = task_to_turnpoints(task)
+total = distance_through_centers(turnpoints, earth_model=task.earth_model)
+```
+
+## Error Handling
+
+```python
+from pyxctsk.distance import DistanceReport
+from pyxctsk.exceptions import TooFewTurnpointsError, UnmeasurableRouteError
+
+try:
+    report = DistanceReport.from_task(task)
+except TooFewTurnpointsError as e:
+    print(f"Not enough turnpoints: {e}")
+except UnmeasurableRouteError as e:
+    print(f"Task geometry cannot be measured: {e}")
+```
+
+<CardGroup cols={2}>
+<Card title="TooFewTurnpointsError" icon="triangle-exclamation">
+Raised when a task has fewer than two turnpoints. A task needs at least one leg to have a distance.
+</Card>
+<Card title="UnmeasurableRouteError" icon="triangle-exclamation">
+Raised when the task's geometry cannot be solved in the local Transverse Mercator plane — for example, turnpoints spread more than a quarter of the globe apart.
+</Card>
+</CardGroup>
+
+## CLI Usage
+
+The `pyxctsk distances` command runs `DistanceReport.from_task` and renders the result.
+
+```bash
+# Human-readable text
+pyxctsk distances task.xctsk --format text
+
+# Machine-readable JSON (default) — for diffing against other implementations
+pyxctsk distances task.xctsk
+
+# Save to file
+pyxctsk distances task.xctsk --format text -o distances.txt
+pyxctsk distances task.xctsk -o distances.json
+```
+
+<Note>
+**FAI sphere tasks.** S7F §4.1 and §4.2 admit only the WGS84 ellipsoid. A task declaring `earthModel: FAI_SPHERE` is fully honoured — all route optimization, cylinder snapping, and goal-line geometry moves to the sphere — but the resulting numbers are not S7F task distances and cannot be used for CIVL competition scoring. pyxctsk does not reject such tasks because `earthModel` is a valid field in the format.
+</Note>

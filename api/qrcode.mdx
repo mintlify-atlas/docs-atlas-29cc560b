@@ -1,0 +1,426 @@
+---
+title: "QRCodeTask: Compact XCTrack Task Encoding"
+sidebarTitle: "QRCodeTask"
+description: "QRCodeTask models the compact XCTrack QR code task format with polyline-encoded coordinates. Generate XCTSK: and XCTSKZ: strings and PNG images."
+---
+
+The XCTrack QR code format is a compact, size-optimised encoding of a competition task designed for reliable scanning — even in direct sunlight. Instead of the full `.xctsk` JSON structure, it stores turnpoint coordinates as a single [polyline-encoded](#coordinate-encoding) string, compresses time representations, and omits any optional fields that can be inferred from defaults. `QRCodeTask` is the Python model for that format. It parses both `XCTSK:` and `XCTSKZ:` URL strings, converts to and from the full `Task` model, and serialises back to either URL scheme. Coordinate encoding is **lossy at approximately 0.8 m**, well within the FAI 5 m tolerance, but not bit-for-bit identical to the original `Task` coordinates after a round-trip.
+
+---
+
+## URL schemes
+
+The QR format carries a JSON payload prefixed by one of two URL schemes:
+
+| Scheme | Encoding | Recommended |
+|---|---|---|
+| `XCTSK:` | Plain JSON appended directly | Current default |
+| `XCTSKZ:` | JSON compressed with zlib, then base64-encoded | Preferred by the spec for new encoders |
+
+Both schemes are **mandatory for decoders** — any conforming implementation must accept either. `from_string` accepts both; `to_string` writes `XCTSK:` by default and `XCTSKZ:` when `compressed=True` is passed.
+
+<Note>
+  The spec states: *"In the future we prefer to use the XCTSKZ encoding."* Use `compressed=True` for new payloads when QR code density matters — a compressed payload fits considerably more task data into a scannable code.
+</Note>
+
+---
+
+## Coordinate encoding
+
+Turnpoint coordinates are encoded using a variant of [Google's Polyline algorithm](https://developers.google.com/maps/documentation/utilities/polylinealgorithm). Each competition turnpoint stores four numbers in a single `z` string field: **longitude × 10⁵, latitude × 10⁵, altitude (m), and radius (m)**. The XC/Waypoints simplified format stores only three (no radius).
+
+Because the algorithm works on integers and the coordinates are rounded to five decimal places before encoding, the encoding is **lossy**: coordinates are recovered to approximately 0.8 m — indistinguishable from the original in the air, but not a lossless round-trip for exact floating-point values.
+
+---
+
+## `QRCodeTask` dataclass
+
+```python
+from pyxctsk.qrcode.task import QRCodeTask
+```
+
+`QRCodeTask` is the top-level model for a task in QR code format. All fields are optional except `version` (which always defaults to `2`).
+
+<ResponseField name="version" type="int" default="2">
+  Format version. Always `2` for the current XCTrack QR format. Written as `"version"` (competition shape) or `"V"` (XC/Waypoints shape) in the JSON payload.
+</ResponseField>
+
+<ResponseField name="task_type" type="TaskType | None">
+  Task type: `TaskType.CLASSIC` for a competition task, `TaskType.WAYPOINTS` for the simplified XC/Waypoints shape. When `None`, the task was read without an explicit type. The competition JSON shape uses `"taskType": "CLASSIC"`; the waypoints shape uses `"T": "W"` as a discriminator key.
+</ResponseField>
+
+<ResponseField name="earth_model" type="EarthModel | None">
+  The earth model used for distance calculations. `EarthModel.WGS84` (integer `0`) is the default and is **omitted** from the payload when present. `EarthModel.FAI_SPHERE` (integer `1`) is written explicitly. `None` means neither was stated; the reader defaults to WGS84.
+</ResponseField>
+
+<ResponseField name="turnpoints" type="list[QRCodeTurnpoint]">
+  The turnpoints in task order. Each holds polyline-decoded latitude, longitude, altitude, radius, name, optional type, and optional description. See [`QRCodeTurnpoint`](#qrcodeturnpoint) below.
+</ResponseField>
+
+<ResponseField name="takeoff" type="QRCodeTakeoff | None">
+  Takeoff open/close times. When present, serialised as two root keys `"to"` (open) and `"tc"` (close) rather than a nested object — the format flattens it to the task root. Absent means no takeoff window was specified.
+</ResponseField>
+
+<ResponseField name="sss" type="QRCodeSSS | None">
+  Start Speed Section: type (RACE or ELAPSED_TIME), time gates, and the obsolete direction field. Serialised as the `"s"` key. `None` if the task has no SSS.
+</ResponseField>
+
+<ResponseField name="goal" type="QRCodeGoal | None">
+  Goal timing and type: deadline, goal type (LINE or CYLINDER), and optional finish altitude AGL. Serialised as the `"g"` key. `None` if no goal section was stated (readers default to CYLINDER).
+</ResponseField>
+
+<ResponseField name="extensions" type="list[dict]">
+  XCTrack extension objects carried through unchanged. An empty list when no extensions were present.
+</ResponseField>
+
+<ResponseField name="unknown" type="dict[str, Any]">
+  Keys present in the source payload that this format does not define, preserved verbatim for round-trip fidelity.
+</ResponseField>
+
+---
+
+### `QRCodeTurnpoint`
+
+<ResponseField name="lat" type="float">
+  Latitude in decimal degrees (WGS84). Decoded from the polyline `z` field; precision is approximately 0.8 m.
+</ResponseField>
+
+<ResponseField name="lon" type="float">
+  Longitude in decimal degrees. Same precision as `lat`.
+</ResponseField>
+
+<ResponseField name="radius" type="int">
+  Cylinder radius in whole metres. `0` for XC/Waypoints turnpoints (the format describes them as "a simple route without cylinders").
+</ResponseField>
+
+<ResponseField name="name" type="str">
+  Turnpoint name. Required in the `"n"` wire key; a payload missing it is refused as malformed.
+</ResponseField>
+
+<ResponseField name="alt_smoothed" type="int">
+  Smoothed altitude in whole metres, encoded in the polyline `z` field.
+</ResponseField>
+
+<ResponseField name="type" type="TurnpointType | None">
+  Turnpoint role. The QR format only names SSS (`2`) and ESS (`3`) explicitly in the `"t"` key; `TAKEOFF` and ordinary turnpoints carry no `"t"`, so `type` is `None` for them. A value of `0` is also treated as "no type".
+</ResponseField>
+
+<ResponseField name="description" type="str | None">
+  Optional free-text description (`"d"` wire key). `None` when absent or empty.
+</ResponseField>
+
+---
+
+### `QRCodeGoal`
+
+<ResponseField name="deadline" type="TimeOfDay | None">
+  Goal deadline time (`"d"` wire key). `None` defaults to 23:00 local time in XCTrack.
+</ResponseField>
+
+<ResponseField name="type" type="GoalType | None">
+  Goal type: `GoalType.LINE` (wire integer `1`) or `GoalType.CYLINDER` (wire integer `2`, the default). `None` means the key was absent; readers treat it as CYLINDER.
+</ResponseField>
+
+<ResponseField name="finish_altitude" type="float | None">
+  Elevated goal altitude in metres AGL (`"fa"` wire key), for tasks with an airspace ceiling at goal. `None` when not specified.
+</ResponseField>
+
+---
+
+### `QRCodeSSS`
+
+<ResponseField name="type" type="SSSType">
+  Start type: `SSSType.RACE` (wire `1`) or `SSSType.ELAPSED_TIME` (wire `2`). Required.
+</ResponseField>
+
+<ResponseField name="direction" type="Direction">
+  **Obsolete.** Read from `"d"` and written back unchanged so older devices keep working, but never interpreted — nothing in pyxctsk changes behaviour based on ENTER vs EXIT. Defaults to the same value the full `SSS` model uses.
+</ResponseField>
+
+<ResponseField name="time_gates" type="list[TimeOfDay]">
+  Ordered list of start gate times (`"g"` wire key). Empty list when no gates are specified.
+</ResponseField>
+
+---
+
+### `QRCodeTakeoff`
+
+<ResponseField name="time_open" type="TimeOfDay | None">
+  Takeoff window open time. `None` when not specified.
+</ResponseField>
+
+<ResponseField name="time_close" type="TimeOfDay | None">
+  Takeoff window close time. `None` when not specified.
+</ResponseField>
+
+---
+
+## Class methods
+
+### `QRCodeTask.from_string`
+
+```python
+@classmethod
+def from_string(cls, url_str: str) -> QRCodeTask
+```
+
+Parse a QR code URL string in either scheme. Both `XCTSK:` and `XCTSKZ:` are accepted, as the spec requires. The scheme prefix is stripped, the `XCTSKZ:` payload is decompressed, and the resulting JSON is parsed through `from_dict`.
+
+<ParamField path="url_str" type="str" required>
+  Complete QR code string beginning with `XCTSK:` or `XCTSKZ:`.
+</ParamField>
+
+**Returns** `QRCodeTask`.
+
+**Raises**
+
+| Exception | When raised |
+|---|---|
+| `MalformedPayloadError` | The string carries neither scheme, the `XCTSKZ:` body is not valid base64, the decompressed bytes are not a valid zlib stream, or the JSON cannot be parsed as a task. |
+
+---
+
+### `QRCodeTask.from_dict`
+
+```python
+@classmethod
+def from_dict(cls, data: dict[str, Any]) -> QRCodeTask
+```
+
+Parse a `QRCodeTask` from an already-decoded QR JSON dictionary. The method detects which of the two wire shapes the dictionary represents: the presence of the key `"T"` identifies the simplified XC/Waypoints shape; its absence means the competition shape. The detected shape is then used for the entire parse — it is never re-decided mid-read.
+
+<ParamField path="data" type="dict" required>
+  A dictionary decoded from a QR-format JSON string. Must be a JSON object (not an array or scalar).
+</ParamField>
+
+**Returns** `QRCodeTask`.
+
+**Raises**
+
+| Exception | When raised |
+|---|---|
+| `MalformedPayloadError` | `data` is not a dict, a required field is missing, a field value is the wrong type, or a polyline `z` string is malformed. |
+
+---
+
+## Instance methods
+
+### `QRCodeTask.to_string`
+
+```python
+def to_string(self, compressed: bool = False) -> str
+```
+
+Serialise the task to a QR code URL string.
+
+<ParamField path="compressed" type="bool" default="False">
+  When `True`, emits the `XCTSKZ:` form — the JSON zlib-compressed and base64-encoded. When `False` (the default), emits `XCTSK:` followed by plain JSON.
+</ParamField>
+
+**Returns** `str` — the complete URL string including scheme prefix.
+
+---
+
+### `QRCodeTask.to_task`
+
+```python
+def to_task(self) -> Task
+```
+
+Convert the compact QR representation to the full `Task` model. All turnpoints, timing sections, earth model, and extensions are translated. Note that because QR coordinates are polyline-encoded (lossy), the resulting `Task`'s waypoint coordinates will differ from the original full-format coordinates by up to approximately 0.8 m.
+
+The QR format does not carry an SSS `time_close`, so the converted `SSS` will always have `time_close=None`. When `task_type` is `None`, the result defaults to `TaskType.CLASSIC`.
+
+**Returns** `Task`.
+
+---
+
+### `QRCodeTask.validate`
+
+```python
+def validate(self) -> list[ValidationIssue]
+```
+
+Check the payload against the spec's structural rules. Validation is performed on the QR model **as it was read** — not on a converted `Task` — so the report reflects the original payload rather than any defaults or defaults that conversion would invent.
+
+**Returns** `list[ValidationIssue]` — one issue per violated rule, empty if the payload is structurally valid. Each `ValidationIssue` stringifies to a human-readable message.
+
+<Note>
+  `validate()` checks structure, not geometry — it will not tell you if a cylinder radius is unreasonably large or a coordinate is in the ocean. Use it to confirm that turnpoint roles appear in a legal order and required fields are present.
+</Note>
+
+---
+
+## `Task.to_qr_code_task`
+
+```python
+# on the Task model
+def to_qr_code_task(self) -> QRCodeTask
+```
+
+Convert a full `Task` to the compact `QRCodeTask` representation. This is the counterpart of `QRCodeTask.to_task()`. The conversion is available as a method on `Task` itself:
+
+```python
+from pyxctsk import load_task
+
+task = load_task("competition.xctsk")
+qr = task.to_qr_code_task()
+```
+
+All turnpoints, timing sections, earth model, extensions, and unknown keys are mapped across. Keys that exist in the full format but have no counterpart in the QR format (e.g. SSS `time_close`, waypoint keys) are dropped. Unknown keys are filtered against the target format's defined key set so they cannot collide with a slot the target format already defines.
+
+**Returns** `QRCodeTask`.
+
+---
+
+## `generate_qrcode_image`
+
+```python
+from pyxctsk.qrcode.image import generate_qrcode_image
+
+def generate_qrcode_image(data: str, size: int = 1024) -> PIL.Image.Image
+```
+
+Render an `XCTSK:` or `XCTSKZ:` string as a QR code PNG image, returned as a `PIL.Image` object. The image uses **M-level error correction** (up to 15% of codewords can be recovered) and is resized to the requested square dimensions with Lanczos resampling.
+
+<Warning>
+  `generate_qrcode_image` requires the optional `[qr]` dependency group, which installs `qrcode`, `zxing-cpp`, and `Pillow`. Without it, calling this function raises `MissingQRCodeSupportError` (a subclass of `ImportError`).
+
+  ```bash
+  pip install 'pyxctsk[qr]'
+  ```
+</Warning>
+
+<ParamField path="data" type="str" required>
+  The string to encode in the QR code. Typically the output of `QRCodeTask.to_string()` or `QRCodeTask.to_string(compressed=True)`.
+</ParamField>
+
+<ParamField path="size" type="int" default="1024">
+  Width and height of the generated image in pixels. The QR code is generated at its natural size and then resized to this square. Defaults to `1024`.
+</ParamField>
+
+**Returns** `PIL.Image.Image` — a square PNG-ready image object.
+
+**Raises**
+
+| Exception | When raised |
+|---|---|
+| `MissingQRCodeSupportError` | The `pyxctsk[qr]` extra is not installed. Subclasses `ImportError`. |
+
+---
+
+## Code examples
+
+### Parse an `XCTSK:` string
+
+```python
+from pyxctsk.qrcode.task import QRCodeTask
+
+url = "XCTSK:{\"taskType\":\"CLASSIC\",\"version\":2,\"t\":[{\"n\":\"D01\",\"z\":\"...\"},{\"n\":\"B75\",\"z\":\"...\"}]}"
+qr = QRCodeTask.from_string(url)
+
+print(qr.task_type)        # TaskType.CLASSIC
+print(len(qr.turnpoints))  # 2
+print(qr.turnpoints[0].name)  # "D01"
+```
+
+### Parse a compressed `XCTSKZ:` string
+
+```python
+from pyxctsk.qrcode.task import QRCodeTask
+
+url = "XCTSKZ:eJyLjgUAARUBFQ=="  # zlib + base64 body
+qr = QRCodeTask.from_string(url)  # decompresses automatically
+```
+
+### Round-trip: Task → QRCodeTask → XCTSK: string
+
+```python
+from pyxctsk import load_task
+
+task = load_task("competition.xctsk")
+qr = task.to_qr_code_task()
+
+# Standard (uncompressed) URL
+url = qr.to_string()
+print(url[:30])  # XCTSK:{...
+
+# Compressed URL — smaller QR code
+url_z = qr.to_string(compressed=True)
+print(url_z[:10])  # XCTSKZ:...
+```
+
+### Round-trip: XCTSK: string → Task
+
+```python
+from pyxctsk.qrcode.task import QRCodeTask
+
+url = "XCTSK:..."
+qr = QRCodeTask.from_string(url)
+task = qr.to_task()
+
+for tp in task.turnpoints:
+    print(tp.waypoint.name, tp.radius)
+```
+
+### Validate a QR payload before converting
+
+```python
+from pyxctsk.qrcode.task import QRCodeTask
+
+qr = QRCodeTask.from_string("XCTSK:...")
+issues = qr.validate()
+
+if issues:
+    for issue in issues:
+        print(f"Validation issue: {issue}")
+else:
+    task = qr.to_task()
+```
+
+### Generate a QR code PNG image
+
+<CodeGroup>
+
+```python Save to file
+from pyxctsk import load_task
+from pyxctsk.qrcode.image import generate_qrcode_image
+
+task = load_task("competition.xctsk")
+url = task.to_qr_code_task().to_string(compressed=True)
+
+img = generate_qrcode_image(url, size=1024)
+img.save("task_qr.png", format="PNG")
+```
+
+```python Save to bytes buffer
+from io import BytesIO
+from pyxctsk import load_task
+from pyxctsk.qrcode.image import generate_qrcode_image
+
+task = load_task("competition.xctsk")
+url = task.to_qr_code_task().to_string(compressed=True)
+
+buf = BytesIO()
+generate_qrcode_image(url, size=512).save(buf, format="PNG")
+png_bytes = buf.getvalue()
+```
+
+</CodeGroup>
+
+<Tip>
+  Prefer `to_string(compressed=True)` when generating images — the compressed `XCTSKZ:` payload is shorter, which means a lower-density QR code that scans more reliably in direct sunlight or at a distance.
+</Tip>
+
+### Inspect the QR JSON directly
+
+```python
+import json
+from pyxctsk import load_task
+
+task = load_task("competition.xctsk")
+qr = task.to_qr_code_task()
+
+# Inspect the compact dict the QR format writes
+print(json.dumps(qr.to_dict(), indent=2))
+```

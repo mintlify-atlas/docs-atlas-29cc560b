@@ -1,0 +1,580 @@
+---
+title: "Distance Functions: Optimized Routes and Geodesic Distances"
+sidebarTitle: "Distance Functions"
+description: "pyxctsk distance functions: optimized_distance, geodesic_distance, MeasuredTask, TaskDistanceTable, GoalLine, SpeedSection, and the LocalPlane projection."
+---
+
+The `pyxctsk.distance` package implements the full FAI Sporting Code S7F §7 task-distance pipeline: projecting turnpoints into a local Transverse Mercator plane, running the Ding–Xie–Jiang alternating sweep to find the shortest route through the cylinders, snapping each result back onto the true geodesic boundary (§7.1.7), and summing the legs on the WGS84 ellipsoid (or the FAI sphere when the task declares it). Everything a caller outside the package needs is re-exported from the `pyxctsk` top-level namespace.
+
+<Note>
+  **A task on the FAI sphere does not produce S7F task distances.** FAI Sporting Code S7F 2026 §4.1 and §4.2 admit the WGS84 ellipsoid only. pyxctsk honours a task that declares `earthModel: FAI_SPHERE` throughout — route, cylinders and goal-line geometry all move to the sphere together — but the resulting numbers are what XCTrack would display and are not valid CIVL competition distances.
+</Note>
+
+---
+
+## MeasuredTask
+
+`MeasuredTask` is the core value the distance package is built around: a `Task` paired with the optimized route that belongs to it. Every module that needs both takes this one object, which makes a mismatched pair unrepresentable rather than merely undocumented.
+
+```python
+from pyxctsk import load_task, MeasuredTask
+
+task = load_task("task.xctsk")
+measured = MeasuredTask.from_task(task)
+
+print(f"Task distance: {measured.total_m / 1000:.3f} km")
+print(f"Turnpoints: {len(measured.turnpoints)}")
+
+cumulative = measured.cumulative_m()
+for i, (tp, dist) in enumerate(zip(measured.turnpoints, cumulative)):
+    print(f"  {i:2d}  lat={tp.center[0]:.5f}  lon={tp.center[1]:.5f}"
+          f"  r={tp.radius} m  cumulative={dist / 1000:.3f} km")
+```
+
+### `MeasuredTask.from_task(task)`
+
+<ParamField path="task" type="Task" required>
+  The task to measure. The optimizer is run once; the result is frozen into the returned `MeasuredTask`.
+</ParamField>
+
+Returns a `MeasuredTask`. Raises `UnmeasurableRouteError` if the local plane cannot represent the route (turnpoints too far apart, or a cylinder larger than the earth).
+
+### Constructor `MeasuredTask(task, route)`
+
+The constructor is public for callers that supply their own route (e.g. a test that renders a drawing without running the optimizer). It derives `turnpoints` from `task` and checks that every point in `route` sits within its cylinder on the task's earth model. Raises `MismatchedRouteError` if the route does not fit.
+
+<Warning>
+  Pass another task's route and the constructor will raise `MismatchedRouteError` — the mismatch is detected by distance, not by reference. This is intentional: a mismatched pair used to produce a fully-formed report 46 km short, with no error.
+</Warning>
+
+### Attributes
+
+<ResponseField name="task" type="Task">
+  The task that was measured.
+</ResponseField>
+
+<ResponseField name="route" type="OptimizedRoute">
+  The optimized route through the task's cylinders.
+</ResponseField>
+
+<ResponseField name="turnpoints" type="tuple[TaskTurnpoint, ...]">
+  The cylinders derived from the task, one per turnpoint, in task order. A LINE goal is a zero-radius point here — `task_to_turnpoints` applies that rule, and `MeasuredTask` stores the result.
+</ResponseField>
+
+<ResponseField name="total_m" type="float">
+  The task's optimized distance in metres — S7F §7.2's task distance. A projection of `route.total_m`.
+</ResponseField>
+
+### `cumulative_m() -> list[float]`
+
+Returns a list of cumulative distances along the optimized route to each turnpoint, in metres. The first entry is always `0.0`; the last equals `total_m`. These are **projections of the route's own legs**, not the result of re-optimizing truncated sub-tasks — which would give different answers, because the optimizer bends toward whichever turnpoint is last.
+
+---
+
+## OptimizedRoute
+
+`OptimizedRoute` is the data class the optimizer returns. It carries the route's points and legs together so that cumulative distances are always computed from the same route that was measured.
+
+```python
+from pyxctsk import MeasuredTask, load_task
+
+measured = MeasuredTask.from_task(load_task("task.xctsk"))
+route = measured.route
+
+print(f"Points: {len(route.points)}")
+print(f"Legs (m): {[round(leg, 1) for leg in route.legs]}")
+print(f"Total: {route.total_m:.1f} m")
+print(f"Earth model: {route.earth_model}")
+```
+
+### Attributes
+
+<ResponseField name="points" type="tuple[tuple[float, float], ...]">
+  One `(lat, lon)` per turnpoint, in task order. The takeoff is the takeoff centre; every subsequent point is snapped onto its cylinder boundary (§7.1.7).
+</ResponseField>
+
+<ResponseField name="legs" type="tuple[float, ...]">
+  Geodesic length of each leg in metres, `len(points) - 1` entries, measured on `earth_model`.
+</ResponseField>
+
+<ResponseField name="earth_model" type="EarthModelLike">
+  The model the legs were measured on: an `EarthModel` member, its string value, or `None` for WGS84.
+</ResponseField>
+
+<ResponseField name="total_m" type="float">
+  Total optimized distance in metres (`sum(legs)`).
+</ResponseField>
+
+### `cumulative_m() -> list[float]`
+
+One cumulative distance per point, starting at `0.0` for the takeoff. The last entry equals `total_m`. Returns `[]` for a route with no points.
+
+---
+
+## TaskTurnpoint
+
+`TaskTurnpoint` is how the distance subsystem represents a turnpoint: a centre coordinate and a cylinder radius. It carries no earth model — that is the task's, supplied once to the optimizer.
+
+```python
+from pyxctsk import TaskTurnpoint
+
+tp = TaskTurnpoint(lat=46.519, lon=8.034, radius=400)
+print(tp.center)   # (46.519, 8.034)
+print(tp.radius)   # 400
+```
+
+### Constructor
+
+```python
+TaskTurnpoint(lat: float, lon: float, radius: float = 0)
+```
+
+<ParamField path="lat" type="float" required>
+  Latitude in degrees.
+</ParamField>
+<ParamField path="lon" type="float" required>
+  Longitude in degrees.
+</ParamField>
+<ParamField path="radius" type="float">
+  Cylinder radius in metres. Defaults to `0`, which collapses the cylinder to a point (used for LINE goals).
+</ParamField>
+
+### Attributes
+
+<ResponseField name="center" type="tuple[float, float]">
+  `(lat, lon)` of the turnpoint centre, in degrees.
+</ResponseField>
+
+<ResponseField name="radius" type="float">
+  Cylinder radius in metres. `0` for a LINE goal — set by `task_to_turnpoints`, the one place the LINE-goal rule is applied.
+</ResponseField>
+
+---
+
+## `task_to_turnpoints(task) -> list[TaskTurnpoint]`
+
+Converts a `Task`'s turnpoints into the cylinders the distance code works on. **This is the single place that applies the LINE-goal rule**: a LINE goal's cylinder is built with `radius=0` (the optimal crossing of a line centred on the goal is the goal centre itself, per S7F §6.2.3.1). Every other role keeps its declared radius.
+
+```python
+from pyxctsk import load_task, task_to_turnpoints
+
+task = load_task("task.xctsk")
+cylinders = task_to_turnpoints(task)
+
+for tp in cylinders:
+    print(f"  center={tp.center}  radius={tp.radius} m")
+```
+
+<ParamField path="task" type="Task" required>
+  The task to convert.
+</ParamField>
+
+Raises `TaskValidationError` (carrying `NEGATIVE_RADIUS` issues) if any turnpoint has a negative radius.
+
+---
+
+## `calculate_task_distances(task) -> TaskDistanceTable`
+
+Measures a task once and returns its distance table at display precision (0.1 km). This is the single-call entry point for the number a task board displays.
+
+```python
+from pyxctsk import load_task, calculate_task_distances
+
+table = calculate_task_distances(load_task("task.xctsk"))
+print(f"Optimized:      {table.optimized_distance_km} km")
+print(f"Through centres:{table.center_distance_km} km")
+print(f"Savings:        {table.savings_km} km  ({table.savings_percent}%)")
+
+for row in table.turnpoints:
+    print(f"  {row.index:2d} {row.name:<10} r={row.radius:>6} m"
+          f"  opt={row.cumulative_optimized_km:.1f} km"
+          f"  ctr={row.cumulative_center_km:.1f} km")
+```
+
+<ParamField path="task" type="Task" required>
+  The task to measure.
+</ParamField>
+
+Raises `TooFewTurnpointsError` if the task has fewer than two turnpoints. Raises `UnmeasurableRouteError` if the task's local plane cannot represent the route.
+
+---
+
+## `task_distances_from(measured) -> TaskDistanceTable`
+
+Projects an already-optimized `MeasuredTask` into a `TaskDistanceTable` without re-running the optimizer. Use this when you already hold a `MeasuredTask` (e.g. from a drawing pipeline) and want the table beside it.
+
+```python
+from pyxctsk import MeasuredTask, load_task, task_distances_from
+
+measured = MeasuredTask.from_task(load_task("task.xctsk"))
+table = task_distances_from(measured)
+print(table.as_dict())
+```
+
+<ParamField path="measured" type="MeasuredTask" required>
+  The task and its route, already measured.
+</ParamField>
+
+Raises `TooFewTurnpointsError` if the task has fewer than two turnpoints.
+
+---
+
+## TaskDistanceTable
+
+The per-turnpoint distance table a task board displays, rounded to 0.1 km. Build one with `calculate_task_distances` or `task_distances_from`; call `as_dict()` if you need a JSON-serializable form.
+
+### Attributes
+
+<ResponseField name="center_distance_km" type="float">
+  Distance through centres under `PROPOSED_READING`, in kilometres rounded to 0.1. S7F does not define this number — see the [center distance section](#center-distance) below.
+</ResponseField>
+
+<ResponseField name="optimized_distance_km" type="float">
+  S7F §7.2's task distance, in kilometres rounded to 0.1.
+</ResponseField>
+
+<ResponseField name="savings_km" type="float">
+  How much the optimized route saves over the centres, in km rounded to 0.1. Computed from the exact distances, then rounded — so the three displayed figures can disagree in the last digit.
+</ResponseField>
+
+<ResponseField name="savings_percent" type="float">
+  The savings as a percentage of the centre distance, rounded to 0.1. `0.0` when there is no centre distance.
+</ResponseField>
+
+<ResponseField name="turnpoints" type="tuple[TurnpointRow, ...]">
+  One `TurnpointRow` per turnpoint, in task order.
+</ResponseField>
+
+### `as_dict() -> dict`
+
+Returns a JSON-serializable dictionary with keys `center_distance_km`, `optimized_distance_km`, `savings_km`, `savings_percent`, and `turnpoints` (list of row dicts).
+
+### TurnpointRow
+
+<Expandable title="TurnpointRow attributes">
+  <ResponseField name="index" type="int">Position in the task, zero-based.</ResponseField>
+  <ResponseField name="name" type="str">The waypoint's name.</ResponseField>
+  <ResponseField name="lat" type="float">Latitude of the turnpoint centre.</ResponseField>
+  <ResponseField name="lon" type="float">Longitude of the turnpoint centre.</ResponseField>
+  <ResponseField name="radius" type="int">Cylinder radius in metres.</ResponseField>
+  <ResponseField name="type" type="str">The turnpoint's role as the format spells it (`"TAKEOFF"`, `"SSS"`, `"ESS"`), or `""` for an ordinary turnpoint.</ResponseField>
+  <ResponseField name="cumulative_center_km" type="float">Distance through centres to this turnpoint, in km rounded to 0.1.</ResponseField>
+  <ResponseField name="cumulative_optimized_km" type="float">Distance along the optimized route to this turnpoint, in km rounded to 0.1. A prefix of `optimized_distance_km` by construction — read from the route's own legs, never re-optimized.</ResponseField>
+</Expandable>
+
+---
+
+## `optimized_distance(turnpoints) -> float`
+
+Low-level entry point: compute the shortest route through a sequence of turnpoint cylinders and return the total distance in metres. This is a thin wrapper around `calculate_iteratively_refined_route` for when you want only the number and not the route points.
+
+```python
+from pyxctsk import optimized_distance, TaskTurnpoint
+
+turnpoints = [
+    TaskTurnpoint(lat=46.519, lon=8.034, radius=0),    # takeoff (centre)
+    TaskTurnpoint(lat=46.620, lon=8.100, radius=3000),
+    TaskTurnpoint(lat=46.750, lon=8.250, radius=1000),
+    TaskTurnpoint(lat=46.830, lon=8.180, radius=200),
+]
+dist = optimized_distance(turnpoints)
+print(f"{dist / 1000:.3f} km")
+```
+
+<ParamField path="turnpoints" type="Sequence[TurnpointGeometry]" required>
+  The cylinders to route through, in task order. The takeoff's radius is ignored — the route always starts at the takeoff centre. Build the sequence with `task_to_turnpoints` to get the LINE-goal rule applied correctly.
+</ParamField>
+
+<ParamField path="num_iterations" type="int | None">
+  Maximum number of alternating sweeps. Defaults to `100`. Normal convergence stops far earlier (ε = 0.1 m, per §7.1.3); this is a safety bound, not an accuracy setting.
+</ParamField>
+
+<ParamField path="earth_model" type="EarthModelLike">
+  Earth model selector: an `EarthModel` member, its string value, or `None` for WGS84. The route's earth model, not any individual turnpoint's.
+</ParamField>
+
+Raises `UnmeasurableRouteError` if the local plane cannot represent a turnpoint or route point.
+
+---
+
+## `geodesic_distance(point1, point2, earth_model=None) -> float`
+
+Compute the geodesic distance between two `(lat, lon)` points, in metres. Uses Karney's algorithm via pyproj on the WGS84 ellipsoid, or exact great-circle distances on the FAI sphere when requested.
+
+```python
+from pyxctsk import geodesic_distance
+
+d = geodesic_distance((46.519, 8.034), (46.830, 8.180))
+print(f"{d:.1f} m")   # WGS84 ellipsoid
+
+from pyxctsk.model.enums import EarthModel
+d_sphere = geodesic_distance((46.519, 8.034), (46.830, 8.180), EarthModel.FAI_SPHERE)
+print(f"{d_sphere:.1f} m")   # FAI sphere
+```
+
+<ParamField path="point1" type="tuple[float, float]" required>
+  `(lat, lon)` of the first point, in degrees.
+</ParamField>
+
+<ParamField path="point2" type="tuple[float, float]" required>
+  `(lat, lon)` of the second point, in degrees.
+</ParamField>
+
+<ParamField path="earth_model" type="EarthModelLike">
+  `EarthModel.WGS84`, `EarthModel.FAI_SPHERE`, their string values, or `None` for the WGS84 default.
+</ParamField>
+
+<Tip>
+  `FAI_SPHERE_RADIUS_M = 6_371_000.0` is also exported from `pyxctsk` for callers that need the sphere radius directly.
+</Tip>
+
+---
+
+## GoalLine and GoalLineOrientation
+
+`GoalLine` concentrates all knowledge of a task's goal-line geometry: its length, orientation, endpoints, and semicircular control zone. It is consumed by the KML and GeoJSON exporters; callers that need to draw a task go through it rather than recomputing goal-line geometry themselves.
+
+<Note>
+  The orientation rule changed in S7F 2025: the line now faces the **optimized route point** on the last control zone before goal, rather than that turnpoint's **centre**. pyxctsk defaults to the current (2025+) rule. On one reference task the two orientations differ by 152°.
+</Note>
+
+### `GoalLine.from_task(task, orientation=OPTIMIZED_ROUTE)`
+
+Build the goal line for a task. Runs the optimizer when the orientation needs a route (the default does). Returns `None` if the task has no LINE goal, fewer than two turnpoints, or all approach candidates coincide with the goal centre.
+
+```python
+from pyxctsk import load_task, GoalLine, GoalLineOrientation
+
+task = load_task("task_with_line_goal.xctsk")
+line = GoalLine.from_task(task)
+
+if line:
+    print(f"Length: {line.length} m")
+    print(f"Approach azimuth: {line.approach_azimuth():.1f}°")
+    p1, p2, az = line.endpoints()
+    print(f"End 1: {p1}")  # (lon, lat) — pyproj axis order
+    print(f"End 2: {p2}")
+```
+
+<ParamField path="task" type="Task" required>
+  The task to derive the goal line from.
+</ParamField>
+
+<ParamField path="orientation" type="GoalLineOrientation">
+  Which edition's rule decides the approach direction. Defaults to `GoalLineOrientation.OPTIMIZED_ROUTE` (S7F 2025+).
+</ParamField>
+
+### `GoalLine.from_measured_task(measured, orientation=OPTIMIZED_ROUTE)`
+
+Primary constructor for callers that already hold a `MeasuredTask` — avoids paying for a second optimizer run and guarantees the route belongs to this task.
+
+<ParamField path="measured" type="MeasuredTask" required>
+  The task and the route measured for it.
+</ParamField>
+
+### GoalLine Attributes
+
+<ResponseField name="center" type="tuple[float, float]">
+  `(lat, lon)` of the goal (last turnpoint).
+</ResponseField>
+
+<ResponseField name="approach_from" type="tuple[float, float]">
+  `(lat, lon)` of the point the line is oriented against — the optimized route point on the last control zone before goal (OPTIMIZED_ROUTE), or that turnpoint's centre (TURNPOINT_CENTERS). The line is perpendicular to the direction from here to `center`.
+</ResponseField>
+
+<ResponseField name="length" type="float">
+  Total goal-line length in metres. Equals twice the last turnpoint's radius (the radius represents half the line).
+</ResponseField>
+
+<ResponseField name="earth_model" type="EarthModelLike">
+  The model the geometry is measured on.
+</ResponseField>
+
+<ResponseField name="control_zone_radius" type="float">
+  Half the line — the control zone's radius and each endpoint's reach. Equal to `length / 2`.
+</ResponseField>
+
+### GoalLine Methods
+
+<ResponseField name="approach_azimuth()" type="float">
+  The geodesic azimuth from `approach_from` to `center`, in degrees. Everything else is perpendicular to it or centred on it.
+</ResponseField>
+
+<ResponseField name="endpoints()" type="tuple[tuple[float, float], tuple[float, float], float]">
+  Returns `((lon1, lat1), (lon2, lat2), forward_azimuth)`. Note the **lon, lat** axis order — these go directly to mapping tools. Raises `UnmeasurableRouteError` if half the line reaches past the far side of the earth.
+</ResponseField>
+
+<ResponseField name="control_zone()" type="list[tuple[float, float]]">
+  The control-zone polygon as a closed list of `(lon, lat)` points: 21-point front semicircle (the side a pilot approaches from), closed back to the start.
+</ResponseField>
+
+### GoalLineOrientation
+
+```python
+from pyxctsk import GoalLineOrientation
+
+GoalLineOrientation.OPTIMIZED_ROUTE    # S7F 2025+: perpendicular to the optimized route point
+GoalLineOrientation.TURNPOINT_CENTERS  # S7F 2024:  perpendicular to the preceding turnpoint's centre
+```
+
+### `goal_line_length_from_turnpoints(turnpoints) -> float | None`
+
+Returns the goal-line length implied by the turnpoints: twice the last turnpoint's radius. Returns `None` if there are no turnpoints.
+
+---
+
+## SpeedSection
+
+`SpeedSection` implements FAI S7F 2026 §7.2's second task distance. The speed section distance is **not** a prefix of the task route — S7F optimizes a separate `taskToESS` route and pyxctsk does the same.
+
+```python
+from pyxctsk import load_task, MeasuredTask
+from pyxctsk.distance import SpeedSection
+
+task = load_task("task.xctsk")
+measured = MeasuredTask.from_task(task)
+ss = SpeedSection.from_measured_task(measured)
+
+if ss:
+    print(f"To ESS:       {ss.to_ess_m / 1000:.3f} km")
+    print(f"Pre-start:    {ss.pre_start_m / 1000:.3f} km")
+    print(f"Speed section:{ss.distance_m / 1000:.3f} km")
+else:
+    print("No SSS/ESS pair found.")
+```
+
+### `SpeedSection.from_measured_task(measured) -> SpeedSection | None`
+
+Build the speed section for an already-measured task. Reuses the measured task's cylinders, but runs a **separate** optimizer for `taskToESS`. Returns `None` if the task has no SSS/ESS pair, is a WAYPOINTS task, or has its ESS before its SSS.
+
+<ParamField path="measured" type="MeasuredTask" required>
+  The task and the route measured for it.
+</ParamField>
+
+### `SpeedSection.from_task(task) -> SpeedSection | None`
+
+Build the speed section for a task, deriving cylinders from scratch. Raises `TaskValidationError` if a turnpoint's radius is negative.
+
+### SpeedSection Attributes
+
+<ResponseField name="route" type="OptimizedRoute">
+  The `taskToESS` route — a separate optimization from the task's own, not a slice of it.
+</ResponseField>
+
+<ResponseField name="start_index" type="int">
+  Where the SSS sits in `route`, so the pre-start portion can be split off.
+</ResponseField>
+
+<ResponseField name="to_ess_m" type="float">
+  Optimized distance from launch to the ESS, in metres.
+</ResponseField>
+
+<ResponseField name="pre_start_m" type="float">
+  Distance from launch to the start of the speed section (SSS), in metres. Read off `route.cumulative_m()[start_index]`.
+</ResponseField>
+
+<ResponseField name="distance_m" type="float">
+  The speed section distance in metres — §7.2's `distanceSpeedSection`. Equal to `to_ess_m - pre_start_m`.
+</ResponseField>
+
+---
+
+## Center Distance
+
+FAI Sporting Code S7F 2026 **does not define "distance through centres"**. §7.2 defines exactly two task distances (the optimized one and the speed section's); "distance through centres" appears nowhere in the 2026 edition. Task boards print it nonetheless, and every implementation has invented its own reading.
+
+Three defensible readings exist and are provided here for diagnosis. On the reference corpus's widest case (`task_pepi`, optimized distance 92 km) they are **39.9 km apart**.
+
+### `center_distance(task, reading=PROPOSED_READING) -> float | None`
+
+Return a task's distance through turnpoint centres, in metres, under the given convention.
+
+```python
+from pyxctsk import load_task, center_distance, CenterDistanceReading
+
+task = load_task("task.xctsk")
+
+# Default: LAUNCH_TO_GOAL — what pyxctsk proposes
+dist = center_distance(task)
+print(f"{dist / 1000:.3f} km")
+
+# Or specify a reading explicitly
+dist_boundary = center_distance(task, CenterDistanceReading.LAUNCH_TO_GOAL_BOUNDARY)
+dist_start = center_distance(task, CenterDistanceReading.START_TO_GOAL)  # None if no SSS
+```
+
+<ParamField path="task" type="Task" required>
+  The task to measure.
+</ParamField>
+
+<ParamField path="reading" type="CenterDistanceReading">
+  Which convention to apply. Defaults to `PROPOSED_READING`. The alternatives exist to diagnose a disagreement with another implementation, not to be chosen between on merit.
+</ParamField>
+
+Returns `None` when the reading does not apply to this task: fewer than two turnpoints under any reading, or no SSS under `START_TO_GOAL`.
+
+### `distance_through_centers(turnpoints, earth_model=None) -> float`
+
+The primitive: sum the geodesic legs between consecutive turnpoint centres. A caller who already knows exactly which turnpoints to include calls this directly; a caller producing a figure for a task board wants `center_distance(task)`.
+
+### `center_distance_readings(task) -> dict[str, float | None]`
+
+Return every reading of a task's centre distance, keyed by `CenterDistanceReading` value name. The diagnostic call: hand a vendor whose board disagrees this dictionary and the cause is either in it or it is a different bug.
+
+```python
+from pyxctsk import load_task, center_distance_readings
+
+readings = center_distance_readings(load_task("task.xctsk"))
+for name, value in readings.items():
+    shown = f"{value / 1000:.3f} km" if value is not None else "n/a"
+    print(f"  {name}: {shown}")
+```
+
+### CenterDistanceReading
+
+```python
+from pyxctsk import CenterDistanceReading
+
+CenterDistanceReading.LAUNCH_TO_GOAL           # Every centre, launch through goal (PROPOSED_READING)
+CenterDistanceReading.LAUNCH_TO_GOAL_BOUNDARY  # Same, less the goal cylinder's effective radius
+CenterDistanceReading.START_TO_GOAL            # From the SSS centre rather than from launch
+```
+
+<Expandable title="CenterDistanceReading values explained">
+  <ResponseField name="LAUNCH_TO_GOAL" type="str">
+    Every turnpoint centre from launch to goal, measured geodesically on the task's earth model. Consecutive duplicate turnpoints contribute their zero-length leg like any other. This is `PROPOSED_READING` — it agrees with published values for all 22 reference tasks to within 49 m, inside the 0.1 km display rounding.
+  </ResponseField>
+  <ResponseField name="LAUNCH_TO_GOAL_BOUNDARY" type="str">
+    The same as `LAUNCH_TO_GOAL`, less the goal's effective radius, so the number ends where the optimized distance ends — at the goal cylinder's boundary rather than its centre. Uses the LINE-goal rule: a LINE goal contributes `0` (its effective radius in the optimizer), so this reading does not subtract the line's declared half-length.
+  </ResponseField>
+  <ResponseField name="START_TO_GOAL" type="str">
+    From the SSS centre rather than from launch, excluding the pre-start leg. Returns `None` for a task with no SSS.
+  </ResponseField>
+</Expandable>
+
+### `PROPOSED_READING`
+
+```python
+from pyxctsk import PROPOSED_READING
+# PROPOSED_READING == CenterDistanceReading.LAUNCH_TO_GOAL
+```
+
+The reading pyxctsk publishes and proposes as the common convention. It is the reading that matches the published values of all 22 reference tasks to within 49 m — inside the 0.1 km boards round to.
+
+---
+
+## LocalPlane
+
+`LocalPlane` is the Transverse Mercator projection the optimizer solves in (S7F §7.1.2). It is exposed in case a caller needs to inspect the projection or reuse one across multiple calls, but most callers never touch it directly.
+
+```python
+from pyxctsk import LocalPlane, TaskTurnpoint
+
+centers = [(46.519, 8.034), (46.620, 8.100), (46.830, 8.180)]
+plane = LocalPlane.around(centers)  # centred on the bounding box
+
+x, y = plane.xy((46.519, 8.034))   # project to local plane (m)
+lat, lon = plane.lon_lat((x, y))    # back to geographic (lon, lat — pyproj order)
+```
+
+`LocalPlane.around(points, earth_model=None)` builds a plane centred on the bounding box of the given `(lat, lon)` points. The scale factor is latitude-dependent above 55° latitude, per S7F §7.1.2.

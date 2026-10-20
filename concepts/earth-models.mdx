@@ -1,0 +1,135 @@
+---
+title: "Earth Models in pyxctsk: WGS84 and FAI Sphere"
+sidebarTitle: "Earth Models"
+description: "pyxctsk supports two earth models for distance calculations: the WGS84 ellipsoid (required by FAI S7F 2026) and the legacy FAI sphere (R = 6371 km)."
+---
+
+Every distance pyxctsk calculates — route legs, cylinder-boundary snaps, goal-line lengths, control-zone geometry — depends on a model of the earth's shape. pyxctsk supports two: the WGS84 ellipsoid, which FAI S7F 2026 §4.1 requires for all competition scoring, and the FAI sphere (R = 6 371 km), a legacy model that paragliding left behind in 2018. Which model to use is declared in the task file itself via the `earthModel` field, and pyxctsk honours that declaration throughout — all distances in a task are measured on the same earth.
+
+## The two models
+
+<CardGroup cols={2}>
+  <Card title="WGS84 ellipsoid" icon="globe">
+    The current standard. Required by FAI Sporting Code S7F 2026 §4.1: *"distances between two geographic points are calculated on the WGS84 ellipsoid."* The default when `earthModel` is absent from the task file. Uses Karney's (2013) geodesic algorithm via pyproj.
+  </Card>
+  <Card title="FAI sphere (R = 6 371 km)" icon="circle">
+    A uniform sphere with radius 6 371 000 m. Used by the FAI sphere earth model in XCTrack's format and by paragliding scoring before 2018. Distances are exact great-circle arcs. A sphere with equal semi-axes makes pyproj's Karney solver compute exact great-circle results.
+  </Card>
+</CardGroup>
+
+## The `EarthModel` enum
+
+```python
+from pyxctsk.model.enums import EarthModel
+
+EarthModel.WGS84        # value: "WGS84"     — the default, required by S7F 2026
+EarthModel.FAI_SPHERE   # value: "FAI_SPHERE" — legacy, R = 6 371 km
+```
+
+Both are `str` enums: `EarthModel.WGS84.value == "WGS84"`. The task file carries the string; pyxctsk parses it into the enum.
+
+## How `earthModel` flows through the library
+
+The `earthModel` field sits on the `Task` object. When pyxctsk builds a `MeasuredTask` (the pair of a task and its optimized route), it reads `task.earth_model` once and passes it to every calculation:
+
+- **Route optimization** — the Ding–Xie–Jiang plane solver projects into a Transverse Mercator built on the chosen earth (WGS84 EPSG:4326 or a spherical CRS at R = 6 371 000 m).
+- **Cylinder snapping** (`snap_to_boundary`, §7.1.7) — the geodesic used to re-place each route point onto its cylinder boundary uses the chosen model.
+- **Leg measurement** — every `geodesic_distance()` call uses the chosen model's `Geod`.
+- **Goal-line geometry** — the goal line's endpoints and its semicircular control zone are derived via `geodesic_destination()` on the chosen model.
+
+The earth model is the **route's**, not each individual turnpoint's. A task with `earthModel: "WGS84"` is measured on WGS84 end to end; a task with `earthModel: "FAI_SPHERE"` is measured on the FAI sphere end to end. A task with no `earthModel` key defaults to WGS84.
+
+## `geodesic_distance()`
+
+The shared entry point for any distance between two points:
+
+```python
+from pyxctsk.distance import geodesic_distance
+from pyxctsk.model.enums import EarthModel
+
+point_a = (4.476050, -76.153519)   # (lat, lon) in decimal degrees
+point_b = (4.589699, -75.967881)
+
+# WGS84 (default — pass None or omit)
+d_wgs84 = geodesic_distance(point_a, point_b)
+
+# WGS84 explicitly
+d_wgs84 = geodesic_distance(point_a, point_b, EarthModel.WGS84)
+
+# FAI sphere
+d_fai = geodesic_distance(point_a, point_b, EarthModel.FAI_SPHERE)
+
+# String spelling also accepted
+d_fai = geodesic_distance(point_a, point_b, "FAI_SPHERE")
+```
+
+The `earth_model` parameter accepts an `EarthModel` member, its string value, or `None` (which means WGS84). Any other value raises `ValueError` — a misspelling is a type error, not a silent fallback to WGS84.
+
+```python
+from pyxctsk.distance import FAI_SPHERE_RADIUS_M
+
+print(FAI_SPHERE_RADIUS_M)  # 6371000.0
+```
+
+## Difference in practice
+
+A meridian degree at the equator measures:
+
+| Model | Metres per degree |
+|---|---|
+| FAI sphere | 111 194.93 m |
+| WGS84 | ~110 574 m |
+
+On a 50 km cylinder radius, XCTrack's own documentation puts the divergence between the two models at **200–300 m** — enough to make or miss a cylinder boundary in scoring.
+
+<Warning>
+  A task that declares `earthModel: "FAI_SPHERE"` produces numbers XCTrack would display correctly, but **those numbers cannot be used to score a CIVL competition**. FAI S7F 2026 §4.1 admits only the WGS84 ellipsoid; the FAI sphere was retired from paragliding scoring in 2018. The divergence between the two models is approximately 200–300 m on a 50 km cylinder.
+</Warning>
+
+## pyxctsk deliberately does not reject FAI sphere tasks
+
+<Note>
+  `earthModel: "FAI_SPHERE"` is a **valid field** in XCTrack's task format. pyxctsk reads it without error, honours it throughout all calculations, and never treats it as a validation violation. A task using the FAI sphere may be someone's XC flight, a historical task, or a task set by software that pre-dates the 2018 change — not necessarily a mistake.
+
+  If you need to enforce WGS84 for CIVL competition scoring, check `task.earth_model` yourself after parsing.
+</Note>
+
+The design decision is recorded in [ADR 0003](https://github.com/simonsteiner/pyxctsk/blob/main/docs/adr/0003-earth-model-handling.md): the field is valid in the format being validated, so rejecting it would be a validation rule about scoring rules, not about the format.
+
+## Checking a task's earth model
+
+```python
+from pyxctsk import load_task
+from pyxctsk.model.enums import EarthModel
+
+task = load_task("competition.xctsk")
+
+# None means WGS84 by default
+if task.earth_model is None or task.earth_model is EarthModel.WGS84:
+    print("WGS84 — valid for CIVL competition scoring")
+elif task.earth_model is EarthModel.FAI_SPHERE:
+    print("FAI sphere — distances computed but not CIVL-valid")
+```
+
+The `DistanceReport` always names the earth model used:
+
+```python
+from pyxctsk import DistanceReport, load_task
+
+report = DistanceReport.from_task(load_task("competition.xctsk"))
+print(report.earth_model)
+# "WGS84" or "WGS84 (default)" or "FAI_SPHERE"
+```
+
+`"WGS84 (default)"` appears when the task omits `earthModel` entirely, so a reader always knows whether the model was declared or defaulted.
+
+## QR format encoding
+
+In the QR format, `earthModel` is encoded as a compact integer under the key `"e"`:
+
+| Wire value | Model |
+|---|---|
+| `0` (or absent) | WGS84 |
+| `1` | FAI sphere |
+
+WGS84 is the default and is **omitted** from the QR payload entirely when declared. The FAI sphere is written as `"e": 1`. pyxctsk converts between the integer wire form and the `EarthModel` enum transparently when round-tripping between full format and QR format.

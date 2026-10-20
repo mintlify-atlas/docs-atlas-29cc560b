@@ -1,0 +1,194 @@
+---
+title: "Converting XCTrack Tasks Between Formats"
+sidebarTitle: "Converting Tasks"
+description: "Convert XCTrack tasks to JSON, KML, GeoJSON, PNG QR codes, and XCTSK: URL strings using render_task or the pyxctsk CLI."
+---
+
+Once you have a `Task` object — from `load_task`, `parse_task`, or constructed in code — pyxctsk can write it out in any of five formats: the `.xctsk` JSON file itself, a KML map for Google Earth, a GeoJSON FeatureCollection, a PNG QR code image, and an `XCTSK:`/`XCTSKZ:` URL string. All output paths flow through a single table called `OUTPUT_FORMATS`.
+
+## `render_task` — the unified output function
+
+`render_task(task, output_format, compressed=False)` is the single entry point for all output formats. It returns `str` for text formats and `bytes` for binary ones.
+
+```python
+from pyxctsk import load_task
+from pyxctsk.renderer import render_task
+
+task = load_task("task.xctsk")
+
+# Text formats return str
+json_str    = render_task(task, "json")
+kml_str     = render_task(task, "kml")
+geojson_str = render_task(task, "geojson")
+qr_str      = render_task(task, "qrcode-json")
+
+# PNG format returns bytes
+png_bytes   = render_task(task, "png")
+with open("task_qr.png", "wb") as f:
+    f.write(png_bytes)
+```
+
+The `compressed` flag controls whether the QR formats emit `XCTSK:` (default) or the zlib+base64 `XCTSKZ:` variant. It is silently ignored by `json`, `kml`, and `geojson`.
+
+```python
+# Compressed XCTSKZ: string
+qr_compressed = render_task(task, "qrcode-json", compressed=True)
+
+# Compressed XCTSKZ: QR code image
+png_compressed = render_task(task, "png", compressed=True)
+```
+
+## Output Formats
+
+Every format is described by an `OutputFormat` row in the `OUTPUT_FORMATS` dict. You can inspect it to get the MIME type, file extension, and whether the output is binary.
+
+```python
+from pyxctsk.renderer import OUTPUT_FORMATS
+
+for name, fmt in OUTPUT_FORMATS.items():
+    print(f"{name:<12}  {fmt.media_type:<45}  {fmt.extension}  binary={fmt.binary}")
+```
+
+| Format | MIME type | Extension | Binary |
+|---|---|---|---|
+| `json` | `application/xctsk` | `.xctsk` | No |
+| `kml` | `application/vnd.google-earth.kml+xml` | `.kml` | No |
+| `geojson` | `application/geo+json` | `.geojson` | No |
+| `png` | `image/png` | `.png` | Yes |
+| `qrcode-json` | `text/plain` | `.txt` | No |
+
+### json — the .xctsk file
+
+The `json` format produces the standard `.xctsk` document — the full XCTrack task format, not the compact QR JSON. This is what you save as a task file.
+
+```python
+from pyxctsk import load_task
+from pyxctsk.renderer import render_task
+
+task = load_task("task.xctsk")
+xctsk_json = render_task(task, "json")
+
+with open("task_copy.xctsk", "w", encoding="utf-8") as f:
+    f.write(xctsk_json)
+```
+
+You can also use `Task.to_json()` directly for the same result:
+
+```python
+json_str = task.to_json()
+```
+
+### kml — Google Earth map
+
+The `kml` format produces a KML document with cylinder polygons for every turnpoint, center points, and the optimized route line. LINE goals also include the goal line and control zone.
+
+```python
+kml_output = render_task(task, "kml")
+
+with open("task.kml", "w", encoding="utf-8") as f:
+    f.write(kml_output)
+```
+
+### geojson — GeoJSON FeatureCollection
+
+The `geojson` format produces a GeoJSON `FeatureCollection` suitable for web mapping libraries such as Leaflet or Mapbox GL.
+
+```python
+import json
+from pyxctsk.renderer import render_task
+
+geojson_str = render_task(task, "geojson")
+geojson_obj = json.loads(geojson_str)
+
+print(geojson_obj["type"])      # "FeatureCollection"
+print(len(geojson_obj["features"]))
+```
+
+### qrcode-json — XCTSK: URL string
+
+The `qrcode-json` format produces the `XCTSK:` or `XCTSKZ:` string that QR codes carry. This is text — no image dependencies required.
+
+```python
+# Standard XCTSK: string
+xctsk_url = render_task(task, "qrcode-json")
+print(xctsk_url[:20])   # XCTSK:{...
+
+# Compressed XCTSKZ: string (recommended for large tasks)
+xctskz_url = render_task(task, "qrcode-json", compressed=True)
+print(xctskz_url[:20])  # XCTSKZ:eJyt...
+```
+
+### png — QR code image
+
+The `png` format renders the QR payload as a 1024×1024 PNG image. **This requires the `[qr]` extra.**
+
+```python
+from pyxctsk.renderer import render_task
+
+png_bytes = render_task(task, "png")
+with open("task_qr.png", "wb") as f:
+    f.write(png_bytes)
+
+# Compressed variant fits more data into the QR code
+png_compressed = render_task(task, "png", compressed=True)
+```
+
+<Warning>
+`render_task(task, "png")` requires `pyxctsk[qr]`. Without it, `render_task` raises `MissingQRCodeSupportError` (a subclass of `ImportError`). Install with:
+```bash
+pip install "pyxctsk[qr]"
+```
+</Warning>
+
+## Direct JSON Serialization
+
+For simple JSON output you can call `task.to_json()` directly without going through `render_task`. It produces the same compact `.xctsk` JSON.
+
+```python
+from pyxctsk import load_task
+
+task = load_task("task.xctsk")
+json_str = task.to_json()
+
+# Round-trip check
+from pyxctsk import parse_task
+task2 = parse_task(json_str)
+assert task == task2
+```
+
+## CLI Usage
+
+The `pyxctsk convert` command exposes the same formats at the command line.
+
+```bash
+# JSON (default)
+pyxctsk convert task.xctsk
+
+# KML for Google Earth
+pyxctsk convert task.xctsk --format kml -o task.kml
+
+# GeoJSON for web maps
+pyxctsk convert task.xctsk --format geojson -o task.geojson
+
+# XCTSK: URL string
+pyxctsk convert task.xctsk --format qrcode-json
+
+# Compressed XCTSKZ: string
+pyxctsk convert task.xctsk --format qrcode-json --compressed
+
+# PNG QR code image (requires pyxctsk[qr])
+pyxctsk convert task.xctsk --format png -o task_qr.png
+
+# Read from stdin, write to stdout
+cat task.xctsk | pyxctsk convert --format kml
+
+# Parse a QR image and output JSON
+pyxctsk convert task_qr.png --format json
+
+# Reject a structurally invalid task instead of converting it
+pyxctsk convert task.xctsk --format json --strict
+```
+
+<Tip>
+An unknown `output_format` name raises `ValueError` listing the valid choices. The `OUTPUT_FORMATS` dict is the single source of truth for which names are valid — `click.Choice` in the CLI reads the same dict.
+</Tip>

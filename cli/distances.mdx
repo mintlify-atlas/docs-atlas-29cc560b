@@ -1,0 +1,191 @@
+---
+title: "pyxctsk distances: Report FAI S7F Task Distances"
+sidebarTitle: "distances"
+description: "pyxctsk distances reports a task's FAI S7F §7.2 optimized distances and the per-turnpoint route in JSON or human-readable text format."
+---
+
+`pyxctsk distances` measures a task and reports its FAI Sporting Code S7F §7.2 distances: the optimized task distance (launch to goal), the speed section distance (where an SSS/ESS pair exists), and the task-board "distance through centres" convention that S7F does not actually define. It also emits the optimized crossing point for every turnpoint so that two implementations can pinpoint exactly where they disagree — not just that their totals differ.
+
+The JSON output is the **machine-readable reference surface** for comparing any other implementation against pyxctsk.
+
+## Synopsis
+
+```bash
+pyxctsk distances [OPTIONS] [INPUT_FILE]
+```
+
+## Parameters
+
+<ParamField path="input_file" type="path" optional>
+  Path to the input file. Accepts `.xctsk` JSON files, files containing an `XCTSK:` or `XCTSKZ:` URL string, and QR code images (PNG, requires `pyxctsk[qr]`). Omit to read from stdin.
+</ParamField>
+
+<ParamField query="--format" type="string" default="json">
+  Output format. `json` produces a machine-readable report suitable for diffing against another implementation. `text` produces a human-readable summary of the same values.
+</ParamField>
+
+<ParamField query="--output / -o" type="path" optional>
+  Path of the output file to write. Defaults to stdout.
+</ParamField>
+
+<ParamField query="--strict" type="flag" default="false">
+  Reject a task that violates the spec's structural rules (TAKEOFF first; SSS and ESS exactly once; SSS before ESS). Without this flag such a task is measured anyway. A malformed value is always rejected regardless of this flag.
+</ParamField>
+
+## Examples
+
+### Report distances as human-readable text
+
+```bash
+pyxctsk distances task.xctsk --format text
+```
+
+```
+pyxctsk 0.5.0  |  FAI S7F 2026 V1.0  |  earth model: WGS84
+
+  task distance (§7.2)            92.002 km
+  speed section (§7.2)            86.761 km
+  through centres                321.440 km   [LAUNCH_TO_GOAL]
+
+  'through centres' is NOT defined by S7F. Other readings of it:
+    LAUNCH_TO_GOAL                321.440 km
+    LAUNCH_TO_GOAL_BOUNDARY       321.240 km
+    START_TO_GOAL                 281.568 km
+
+  optimized route:
+     0 D01        TAKEOFF  r=     0 m    4.476050  -76.153519     0.000 km
+     1 X09        SSS      r= 37000 m    4.502847  -76.137677     3.446 km
+     ...
+     8 G02                 r=   200 m    4.589699  -75.967881    92.002 km
+```
+
+### Report distances as JSON (default)
+
+```bash
+pyxctsk distances task.xctsk
+pyxctsk distances task.xctsk --format json
+```
+
+### Save JSON output to a file
+
+```bash
+pyxctsk distances task.xctsk -o distances.json
+```
+
+### Read from stdin
+
+```bash
+cat task.xctsk | pyxctsk distances
+pyxctsk distances < task.xctsk --format text
+```
+
+## JSON output structure
+
+The JSON output is the primary exchange format for comparing implementations. It carries every number alongside its provenance so that a difference in totals can immediately be traced to the specific turnpoint where the routes diverge.
+
+```json
+{
+  "pyxctsk_version": "0.5.0",
+  "s7f_edition": "2026 V1.0",
+  "earth_model": "WGS84",
+  "task_distance_m": 92002.3,
+  "speed_section_distance_m": 86761.1,
+  "speed_section_to_ess_m": 89850.7,
+  "speed_section_pre_start_m": 3089.6,
+  "center_distance_m": 321440.2,
+  "center_distance_reading": "LAUNCH_TO_GOAL",
+  "center_distance_readings_m": {
+    "LAUNCH_TO_GOAL": 321440.2,
+    "LAUNCH_TO_GOAL_BOUNDARY": 321240.5,
+    "START_TO_GOAL": 281568.0
+  },
+  "route": [
+    {
+      "index": 0,
+      "name": "D01",
+      "type": "TAKEOFF",
+      "radius_m": 0,
+      "center_lat": 4.476050,
+      "center_lon": -76.153519,
+      "route_lat": 4.476050,
+      "route_lon": -76.153519,
+      "cumulative_m": 0.0,
+      "cumulative_center_m": 0.0
+    },
+    {
+      "index": 1,
+      "name": "X09",
+      "type": "SSS",
+      "radius_m": 37000,
+      "center_lat": 4.502847,
+      "center_lon": -76.137677,
+      "route_lat": 4.502847,
+      "route_lon": -76.137677,
+      "cumulative_m": 3446.1,
+      "cumulative_center_m": 3100.4
+    }
+  ],
+  "notes": {
+    "task_distance_m": "FAI S7F 2026 §7.2, optimized launch to goal",
+    "speed_section_distance_m": "FAI S7F 2026 §7.2, a separate launch-to-ESS optimization minus its pre-start portion; null when the task has no SSS/ESS pair",
+    "center_distance_m": "NOT DEFINED BY S7F. A task-board convention; this is the reading pyxctsk proposes. See center_distance_readings_m for the alternatives and docs/s7f-distance-reference.md for why they differ by up to 39.9 km",
+    "route": "The optimized crossing point per turnpoint. Exchange these rather than totals: a total says two implementations disagree, these say where. cumulative_center_m is the prefix of the center_distance_m reading above, so its last row equals it"
+  }
+}
+```
+
+### Key fields
+
+| Field | Type | Description |
+|---|---|---|
+| `pyxctsk_version` | string | Library version that produced this report. |
+| `s7f_edition` | string | FAI S7F edition the calculations are audited against. |
+| `earth_model` | string | Earth model used for geodesic measurements (`WGS84` or `FAI_SPHERE`). |
+| `task_distance_m` | number | **S7F §7.2** optimized path from launch to goal, in metres. |
+| `speed_section_distance_m` | number \| null | **S7F §7.2** speed section distance, in metres. `null` when the task has no SSS/ESS pair. |
+| `speed_section_to_ess_m` | number \| null | The full `taskToESS` optimization total used to derive the speed section distance. |
+| `speed_section_pre_start_m` | number \| null | The pre-start portion subtracted from `taskToESS` to arrive at `speed_section_distance_m`. |
+| `center_distance_m` | number \| null | Distance through turnpoint centres — **pyxctsk's proposed reading**. |
+| `center_distance_reading` | string | Name of the reading used for `center_distance_m`. |
+| `center_distance_readings_m` | object | All available readings of the centre distance, keyed by name. |
+| `route` | array | One object per turnpoint with centre coordinates, optimized crossing coordinates, and cumulative distances. |
+| `notes` | object | Human-readable provenance note for each key field. |
+
+### Route row fields
+
+Each entry in the `route` array describes one turnpoint:
+
+| Field | Description |
+|---|---|
+| `index` | Zero-based position in the task. |
+| `name` | Waypoint name. |
+| `type` | Turnpoint role (`TAKEOFF`, `SSS`, `ESS`, or `""` for ordinary turnpoints). |
+| `radius_m` | Cylinder radius in metres. |
+| `center_lat` / `center_lon` | Coordinates of the turnpoint centre. |
+| `route_lat` / `route_lon` | Coordinates of the optimized crossing point on the cylinder boundary. |
+| `cumulative_m` | Distance along the optimized route to this turnpoint, in metres. |
+| `cumulative_center_m` | Distance through centres to this turnpoint, in metres. The last row equals `center_distance_m`. |
+
+## Understanding the notes block
+
+The `notes` field in the JSON output states, for each key field, exactly which section of FAI S7F defines it — or explicitly flags that S7F does not define it at all. This provenance travels with the numbers so that a consumer can never silently treat a convention as a specification.
+
+- **`task_distance_m`** and **`speed_section_distance_m`** are defined by FAI S7F §7.2. Two implementations following §7.2 exactly should agree to within millimetres.
+- **`center_distance_m`** is **not defined by S7F** at all. It is a task-board convention that every vendor has invented independently, and defensible readings of it differ by up to 39.9 km on the same task.
+
+<Note>
+  `center_distance_m` is the reading pyxctsk proposes (every turnpoint centre, launch through goal, geodesic on the declared earth model). On the 22 reference tasks that carry a published value, pyxctsk agrees with the published figure to within 49 m. That agreement is by convention — not by specification — and `center_distance_readings_m` lists the alternatives so you can identify immediately whether a disagreement with another tool is a different convention or a different bug.
+</Note>
+
+## Comparing against another implementation
+
+The JSON output is designed to be diffed directly between implementations. The recommended workflow is:
+
+1. Run `pyxctsk distances task.xctsk -o pyxctsk_report.json` for each task in your corpus.
+2. Run the equivalent command from the other implementation and write its output to `other_report.json`.
+3. Compare `task_distance_m` and `speed_section_distance_m` for the S7F-defined numbers.
+4. When totals disagree, compare the `route` arrays — `route_lat`/`route_lon` at each turnpoint — to locate the specific cylinder where the paths diverge.
+
+<Tip>
+  A difference in totals alone tells you *that* two implementations disagree. Comparing the per-turnpoint crossing coordinates (`route_lat`, `route_lon`) tells you *where* they diverge. Always exchange route points, not just totals.
+</Tip>

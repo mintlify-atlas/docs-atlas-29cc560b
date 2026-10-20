@@ -1,0 +1,276 @@
+---
+title: "XCTrack Task Format: Full JSON and QR Encoding"
+sidebarTitle: "Task Format"
+description: "Understand the two XCTrack task formats — full JSON (.xctsk) and compact QR — their structure, fields, and how pyxctsk models them as typed dataclasses."
+---
+
+XCTrack competition tasks travel in two formats: a human-readable JSON file (`.xctsk`) used on disk and over the web, and a compact QR encoding designed to fit in a scannable code under direct sunlight. Both formats carry the same domain objects — task type, turnpoints, timing, goal — but use entirely different key names and coordinate encodings. pyxctsk reads and writes both, converting between them losslessly except for the ~0.8 m coordinate rounding inherent to the QR polyline algorithm.
+
+## The two formats
+
+<CardGroup cols={2}>
+  <Card title="Full format (.xctsk)" icon="file-code">
+    Standard JSON with spelled-out keys (`taskType`, `turnpoints`, `altSmoothed`, …). This is the canonical format the spec calls the *task format*. Files use the `.xctsk` extension and may be loaded from disk, shared by URL, or pasted directly.
+  </Card>
+  <Card title="QR format" icon="qrcode">
+    Compact JSON with one- and two-letter keys (`t`, `g`, `s`, `e`, …) and all turnpoint coordinates packed into a single Google Polyline string. Designed to fit a full competition task into a scannable QR code. The payload begins with `XCTSK:` (plain JSON) or `XCTSKZ:` (zlib-compressed, base64-encoded).
+  </Card>
+</CardGroup>
+
+<Note>
+  The glossary terms **full format** and **QR format** are the preferred names for these two encodings. Avoid "long format", "normal format", "short format", or "compressed format" — the last of these is already taken by the `XCTSKZ:` variant of the QR encoding, which is a different question from which format you are in.
+</Note>
+
+## The two task shapes
+
+Both formats support two *shapes* — structurally distinct layouts, not just optional fields:
+
+<Accordion title="Competition shape">
+  A full course with cylinders, timing, and a goal. Identified by `taskType: "CLASSIC"` in the full format and by the absence of a `"T"` key in the QR format. Contains the complete set of objects: `turnpoints` (each with a `radius`), `takeoff`, `sss`, and `goal`.
+
+  ```json
+  {
+    "taskType": "CLASSIC",
+    "version": 1,
+    "turnpoints": [
+      {
+        "radius": 400,
+        "waypoint": { "name": "D01", "lat": 4.476050, "lon": -76.153519, "altSmoothed": 1220 },
+        "type": "TAKEOFF"
+      },
+      {
+        "radius": 37000,
+        "waypoint": { "name": "X09", "lat": 4.502847, "lon": -76.137677, "altSmoothed": 1300 },
+        "type": "SSS"
+      },
+      {
+        "radius": 200,
+        "waypoint": { "name": "G02", "lat": 4.589699, "lon": -75.967881, "altSmoothed": 980 }
+      }
+    ],
+    "sss": {
+      "type": "RACE",
+      "direction": "EXIT",
+      "timeGates": ["13:00:00Z"]
+    },
+    "goal": { "type": "CYLINDER", "deadline": "19:00:00Z" }
+  }
+  ```
+</Accordion>
+
+<Accordion title="XC/Waypoints shape">
+  "A simple route from waypoints without cylinders" — names and positions only, with no radii, no timing, and no goal. Identified by `taskType: "W"` in the full format and by `"T": "W"` in the QR format. This is a different *shape* rather than a competition task with fields omitted; converting to the waypoints shape discards radii, turnpoint types, timing sections, and the earth model.
+
+  ```json
+  {
+    "taskType": "W",
+    "version": 1,
+    "turnpoints": [
+      { "waypoint": { "name": "Launch", "lat": 4.476050, "lon": -76.153519, "altSmoothed": 1220 } },
+      { "waypoint": { "name": "Goal",   "lat": 4.589699, "lon": -75.967881, "altSmoothed": 980  } }
+    ]
+  }
+  ```
+</Accordion>
+
+## Domain objects as Python dataclasses
+
+pyxctsk models each format object as a plain, mutable dataclass. Fields are not validated on construction — parse-time errors are `MalformedPayloadError`; structural rule violations come from `task.validate()`. Nothing derived is stored back onto the object: a round-trip produces exactly what was read.
+
+### `Task`
+
+The root object, representing one competition course.
+
+```python
+from pyxctsk.model.task import Task, Turnpoint, Waypoint, Takeoff, SSS, Goal
+from pyxctsk.model.enums import TaskType, EarthModel
+
+@dataclass
+class Task:
+    task_type: TaskType           # "CLASSIC" or "W" (WAYPOINTS)
+    version: int                  # format version (1 for full format)
+    turnpoints: list[Turnpoint]
+    earth_model: EarthModel | None = None   # WGS84 default when absent
+    takeoff: Takeoff | None = None
+    sss: SSS | None = None
+    goal: Goal | None = None
+    extensions: list[dict] = ...  # manufacturer extensions (opaque)
+    unknown: dict = ...           # unknown keys, carried verbatim
+```
+
+The `task_type` field uses the wire value `"W"` (not `"WAYPOINTS"`) for `TaskType.WAYPOINTS` — the format's own spelling. Use `task.effective_goal` when you want the *flown* goal (with the default `CYLINDER` type applied when `goal` is absent or untyped); read `task.goal` when you want what the file actually said.
+
+### `Turnpoint`
+
+One point of the course — a waypoint plus the cylinder radius that defines how close a pilot must pass.
+
+```python
+@dataclass
+class Turnpoint:
+    radius: int                       # cylinder radius in metres
+    waypoint: Waypoint
+    type: TurnpointType | None = None # TAKEOFF, SSS, ESS, or absent
+    extensions: list[dict] = ...      # per-turnpoint manufacturer data
+    unknown: dict = ...
+```
+
+`radius` is in **whole metres** (fractional values from the wire are rounded). The cylinder a pilot must touch is this radius swept vertically; the waypoint is its centre. See the [GLOSSARY.md on GitHub](https://github.com/simonsteiner/pyxctsk/blob/main/GLOSSARY.md) entry for *cylinder*.
+
+### `Waypoint`
+
+A named geographic position. Carries no role in the course and no radius — those belong to `Turnpoint`.
+
+```python
+@dataclass
+class Waypoint:
+    name: str
+    lat: float          # decimal degrees, WGS84 (or FAI sphere)
+    lon: float          # decimal degrees
+    alt_smoothed: int   # smoothed altitude, metres AMSL (JSON key: altSmoothed)
+    description: str | None = None
+    unknown: dict = ...
+```
+
+`alt_smoothed` maps to the JSON key `altSmoothed`. The spec types it as a number; pyxctsk rounds any fractional value to honour the `int` annotation and match the QR format's whole-metre constraint.
+
+### `Takeoff`
+
+The takeoff window: when it opens and closes. Both times are optional.
+
+```python
+@dataclass
+class Takeoff:
+    time_open: TimeOfDay | None = None   # JSON key: timeOpen
+    time_close: TimeOfDay | None = None  # JSON key: timeClose
+    unknown: dict = ...
+```
+
+### `SSS`
+
+The Start of Speed Section — where the race clock begins.
+
+```python
+@dataclass
+class SSS:
+    type: SSSType               # RACE or ELAPSED-TIME
+    direction: Direction        # obsolete — read, preserved, never interpreted
+    time_gates: list[TimeOfDay] # one entry per start window
+    time_close: TimeOfDay | None = None
+    unknown: dict = ...
+```
+
+`direction` (`ENTER`/`EXIT`) is **obsolete** per the spec: readers must ignore it, writers still emit it for backwards compatibility with older devices. pyxctsk carries the value through a round-trip without acting on it.
+
+### `Goal`
+
+Where the task ends: either a cylinder (the last turnpoint's radius) or a goal line perpendicular to the approach.
+
+```python
+@dataclass
+class Goal:
+    type: GoalType | None = None          # CYLINDER or LINE
+    deadline: TimeOfDay | None = None
+    finish_altitude: float | None = None  # JSON key: finishAltitude — metres AGL
+                                          # above the last turnpoint's altSmoothed
+    unknown: dict = ...
+```
+
+For `GoalType.LINE`, the total line length is **twice** the last turnpoint's `radius` (that radius means half the line, not a cylinder). The non-spec `lineLength` key some older producers wrote is deliberately ignored on read and never written on output — it is always derivable from the radius, and echoing a disagreeing value would preserve a wrong number.
+
+`finishAltitude` is metres **above ground level** measured from the last turnpoint's `altSmoothed`. Some producers instead write an absolute AMSL altitude in a custom root key; pyxctsk carries that through `Task.unknown` without mapping it onto this field, because the units are different.
+
+## Enumerations
+
+```python
+from pyxctsk.model.enums import (
+    TaskType,       # CLASSIC = "CLASSIC", WAYPOINTS = "W"
+    TurnpointType,  # NONE = "", TAKEOFF, SSS, ESS
+    SSSType,        # RACE, ELAPSED_TIME = "ELAPSED-TIME"
+    GoalType,       # CYLINDER, LINE
+    Direction,      # ENTER, EXIT  (obsolete in SSS)
+    EarthModel,     # WGS84, FAI_SPHERE
+)
+```
+
+All enums are `str` enums: their `.value` is the wire string.
+
+## Field types at a glance
+
+| Concept | Python type | Wire format | Notes |
+|---|---|---|---|
+| Latitude / longitude | `float` | Decimal degrees | e.g. `4.476050`, `-76.153519` |
+| Altitude | `int` | Metres AMSL | `altSmoothed`, rounded from any fractional wire value |
+| Cylinder radius | `int` | Whole metres | Rounded from any fractional wire value |
+| Time of day | `TimeOfDay` | `"HH:MM:SSZ"` | UTC, 24-hour, literal `Z` suffix |
+| Goal altitude | `float` | Metres AGL | Measured from last turnpoint's `altSmoothed` |
+| Task type | `TaskType` | `"CLASSIC"` / `"W"` | Wire key: `taskType` |
+
+## QR format differences
+
+The QR format uses compact keys and encodes all turnpoint coordinates as a single Google Polyline string (lossy to ~0.8 m). Other differences:
+
+- `taskType` → omitted (competition shape) or `"T": "W"` (waypoints shape)
+- `turnpoints` → `"t"`, with coordinates polyline-encoded
+- `sss` → `"s"`, `goal` → `"g"`, `earthModel` → `"e"` (integer: `0`=WGS84, `1`=FAI sphere)
+- `takeoff.timeOpen`/`timeClose` are root keys `"to"` / `"tc"`, not a nested object
+- `version` → `"V"` (waypoints shape) or `"version"` (competition shape), defaults to `2`
+- WGS84 is the default earth model and is **omitted** from the QR payload entirely
+
+```python
+from pyxctsk import load_task
+
+# Round-trip: full format → QR format → full format
+task = load_task("my-task.xctsk")
+qr_task = task.to_qr_code_task()
+
+# Uncompressed XCTSK: string
+url = qr_task.to_string()
+
+# zlib + base64 XCTSKZ: string (spec-preferred for future use)
+url_z = qr_task.to_string(compressed=True)
+
+# Back to Task
+task2 = qr_task.to_task()
+```
+
+## Unknown keys and manufacturer extensions
+
+pyxctsk preserves round-trip fidelity for both kinds of producer-defined data:
+
+<CardGroup cols={2}>
+  <Card title="Unknown keys" icon="question">
+    Any key the spec does not define lands in the `unknown` dict of the nearest enclosing object and is written back out verbatim. Nothing in an `unknown` dict is ever interpreted — not mapped onto a spec field, not type-checked, not dropped. One real-world producer writes `{"o": {"v": 2, "fa": 1220}}` at the task root; pyxctsk carries it without touching it.
+  </Card>
+  <Card title="Extensions" icon="puzzle-piece">
+    The format's sanctioned mechanism for manufacturer data: a list of opaque objects at `task.extensions`, each carrying an `id` key. Per-turnpoint manufacturer data lives in `turnpoint.extensions` in the same order. Extensions are carried verbatim just like unknown keys, but are distinct from them in being spec-defined.
+  </Card>
+</CardGroup>
+
+<Warning>
+  Do not map `unknown` keys onto spec fields even if they look similar. One producer writes `"fa"` (absolute AMSL altitude) where the spec defines `finishAltitude` (AGL above last turnpoint). The units differ; silently mapping one onto the other produces wrong numbers.
+</Warning>
+
+## Serialization
+
+```python
+from pyxctsk import load_task, parse_task
+from pyxctsk.model.task import Task
+
+# From a .xctsk file path
+task = load_task("competition.xctsk")
+
+# From a JSON string
+task = Task.from_json(json_string)
+
+# To a compact JSON string (what .xctsk files contain)
+json_str = task.to_json()
+
+# To a dict (for custom serialization)
+d = task.to_dict()
+
+# Structural validation (returns issues, does not raise)
+issues = task.validate()
+
+# Strict parse — raises TaskValidationError on any violation
+task = parse_task(json_string, strict=True)
+```

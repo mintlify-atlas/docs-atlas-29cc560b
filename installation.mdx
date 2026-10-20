@@ -1,0 +1,106 @@
+---
+title: "Install pyxctsk: Core Library and QR Extra"
+sidebarTitle: "Installation"
+description: "Install pyxctsk from PyPI for the core library and CLI, or add the qr extra for PNG QR code generation and image reading. Requires Python 3.11+."
+---
+
+pyxctsk is distributed on PyPI and installs with a single `pip` command. It comes in two flavours: the **core** install, which covers the library, CLI, and all features except QR image I/O, and the **`[qr]` extra**, which adds the dependencies needed to render QR codes as PNG files and to read them back from images. Both are built for Python 3.11 and later.
+
+## Core install
+
+```bash
+pip install pyxctsk
+```
+
+The core install gives you the `pyxctsk` Python package and the `pyxctsk` CLI command. It includes all four runtime dependencies:
+
+| Package | Purpose |
+|---------|---------|
+| `click` | Command-line interface framework for the `pyxctsk` CLI |
+| `pyproj` | Geodesic and projection calculations for distance measurements |
+| `scipy` | Route optimization algorithms (Ding–Xie–Jiang path finder) |
+| `simplekml` | KML document generation for the `--format kml` output |
+
+With only the core install you can:
+
+- Parse `.xctsk` files, `XCTSK:` URLs, and `XCTSKZ:` compressed URLs
+- Build and serialize `Task` objects
+- Convert tasks to JSON, KML, and GeoJSON
+- Generate `XCTSK:` and `XCTSKZ:` compact URL strings (no image involved)
+- Calculate FAI S7F distances with `DistanceReport`
+- Use the full `pyxctsk` CLI, except for `--format png`
+
+## QR image extra
+
+```bash
+pip install "pyxctsk[qr]"
+```
+
+The `[qr]` extra adds three packages on top of the core install:
+
+| Package | Purpose |
+|---------|---------|
+| `Pillow` | Image processing for QR code generation and parsing |
+| `qrcode` | QR code generation (with PIL backend) |
+| `zxing-cpp` | QR code decoding from images (ships binary wheels; no system library needed) |
+
+With the `[qr]` extra installed you can additionally:
+
+- Render a task as a scannable PNG QR image (`render_task(task, "png")` / `pyxctsk convert --format png`)
+- Parse a task directly from a QR code image file (`load_task("qr.png")` / `parse_task(image_bytes)`)
+
+<Note>
+  The `XCTSK:` and `XCTSKZ:` **string** formats do not require the `[qr]` extra — only **image** rendering and image reading do. Generating a compact `XCTSK:` URL string, converting between full JSON and QR JSON, and reading a file that contains an `XCTSK:` string all work with the core install.
+</Note>
+
+If you call `parse_task()` on image bytes or `render_task(task, "png")` without the `[qr]` extra installed, pyxctsk raises a `MissingQRCodeSupportError` with a message naming the extra to install — it will never fail silently.
+
+## Python version requirements
+
+pyxctsk requires **Python 3.11 or later**. The CI pipeline verifies correctness on every supported CPython version:
+
+| Python | Tested |
+|--------|--------|
+| 3.11 | ✅ |
+| 3.12 | ✅ |
+| 3.13 | ✅ |
+| 3.14 | ✅ |
+
+Testing runs on every pull request, every push to `main`, and before each release.
+
+## Verifying the install
+
+After installing, confirm the CLI is available:
+
+```bash
+pyxctsk --version
+pyxctsk --help
+```
+
+And confirm the library is importable:
+
+```python
+import pyxctsk
+print(pyxctsk.__version__)
+```
+
+## Choosing the right install
+
+<CodeGroup>
+
+```bash Core only (no QR images)
+# Parsing, conversion, distance calculations, KML/GeoJSON,
+# and XCTSK:/XCTSKZ: string generation — everything except PNG.
+pip install pyxctsk
+```
+
+```bash Full install with QR image support
+# Everything above, plus PNG QR code output and QR image input.
+pip install "pyxctsk[qr]"
+```
+
+</CodeGroup>
+
+<Tip>
+  To contribute to pyxctsk or run the test suite, clone the repository and install the development dependencies from the `dev` dependency group. The source is at [github.com/simonsteiner/pyxctsk](https://github.com/simonsteiner/pyxctsk) — see `docs/setup.md` in the repository for the full development setup instructions.
+</Tip>

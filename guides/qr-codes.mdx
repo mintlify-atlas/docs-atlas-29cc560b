@@ -1,0 +1,204 @@
+---
+title: "Working with XCTSK QR Codes in pyxctsk"
+sidebarTitle: "QR Codes"
+description: "Generate XCTSK: and XCTSKZ: QR codes from tasks, read them back from strings or PNG images, and understand the compressed vs uncompressed encoding."
+---
+
+XCTrack defines two QR schemes for sharing competition tasks: `XCTSK:` (standard) and `XCTSKZ:` (zlib+base64 compressed). Both carry the same compact JSON payload describing the task; the difference is whether that JSON is raw or compressed. pyxctsk fully implements both schemes for reading and writing. Reading and writing the **string** form of either scheme requires only the core install — no optional dependencies.
+
+## The Two QR Schemes
+
+<CardGroup cols={2}>
+<Card title="XCTSK:" icon="qrcode">
+The standard scheme. The payload is the compact QR task JSON prefixed with `XCTSK:`. Simple to inspect and debug — the JSON is readable directly from the string.
+</Card>
+<Card title="XCTSKZ:" icon="qrcode">
+The compressed scheme. The payload is zlib-compressed, then base64-encoded, prefixed with `XCTSKZ:`. Produces a smaller QR code that is easier to scan in direct sunlight. The spec prefers this going forward.
+</Card>
+</CardGroup>
+
+<Note>
+Reading and writing `XCTSK:` and `XCTSKZ:` strings does **not** require the `[qr]` extra. Only rendering or reading **PNG image** files requires it. Install the core library with `pip install pyxctsk` to get full string-level QR support.
+</Note>
+
+## Generating QR Strings from a Task
+
+The cleanest path from a `Task` to an `XCTSK:` or `XCTSKZ:` string goes through `Task.to_qr_code_task()`, which converts the full task format to the compact QR representation, and then `QRCodeTask.to_string()`.
+
+```python
+from pyxctsk import load_task
+
+task = load_task("task.xctsk")
+
+# Convert to QRCodeTask (compact representation)
+qr_task = task.to_qr_code_task()
+
+# Standard XCTSK: string (uncompressed)
+xctsk_string = qr_task.to_string()
+print(xctsk_string[:30])   # XCTSK:{"taskType":"CLASSIC",...
+
+# Compressed XCTSKZ: string
+xctskz_string = qr_task.to_string(compressed=True)
+print(xctskz_string[:30])  # XCTSKZ:eJyt...
+```
+
+<Note>
+Use `XCTSKZ:` when the task has many turnpoints or long names — the compressed form fits far more data into a scannable code and is what XCTrack itself prefers for new output.
+</Note>
+
+## Parsing a QR String Back to a Task
+
+`QRCodeTask.from_string()` accepts both `XCTSK:` and `XCTSKZ:` strings, as the spec requires. It returns a `QRCodeTask`; call `.to_task()` to get a full `Task`.
+
+```python
+from pyxctsk.qrcode.task import QRCodeTask
+
+xctsk_string = "XCTSK:{...}"
+qr_task = QRCodeTask.from_string(xctsk_string)
+
+# Convert to a full Task object
+task = qr_task.to_task()
+print(task.task_type)
+print(len(task.turnpoints))
+```
+
+You can also go directly to a `Task` using `parse_task`, which handles both schemes automatically:
+
+```python
+from pyxctsk import parse_task
+
+task = parse_task("XCTSK:{...}")
+task = parse_task("XCTSKZ:eJyt...")
+```
+
+## Generating a PNG QR Code Image
+
+`generate_qrcode_image(data, size)` renders any string as a PIL `Image` object. Pass the `XCTSK:` or `XCTSKZ:` string from above.
+
+```python
+from pyxctsk import load_task
+from pyxctsk.qrcode.image import generate_qrcode_image
+
+task = load_task("task.xctsk")
+qr_string = task.to_qr_code_task().to_string(compressed=True)
+
+# Render to a PIL Image (default size: 1024×1024)
+image = generate_qrcode_image(qr_string)
+image.save("task_qr.png")
+
+# Custom size
+image = generate_qrcode_image(qr_string, size=512)
+image.save("task_qr_small.png")
+```
+
+<Warning>
+`generate_qrcode_image` requires the `[qr]` extra (`Pillow`, `qrcode`, `zxing-cpp`). Without it, the function raises `MissingQRCodeSupportError`, which subclasses both `pyXCTSKError` and `ImportError`, so existing `except ImportError` blocks continue to work.
+
+```bash
+pip install "pyxctsk[qr]"
+```
+</Warning>
+
+## Reading a QR Code from an Image
+
+`parse_task` and `load_task` automatically handle PNG and JPEG QR code images. Internally they use `read_qrcode_image` to extract all QR code texts from the image, then pick the first `XCTSK:` or `XCTSKZ:` payload.
+
+```python
+from pyxctsk import parse_task, load_task
+
+# From file path
+task = load_task("task_qr.png")
+
+# From image bytes already in memory
+with open("task_qr.png", "rb") as f:
+    task = parse_task(f.read())
+```
+
+If you need the raw decoded text from an image (for example, to inspect all QR codes in one image), use `read_qrcode_image` directly:
+
+```python
+from pyxctsk.qrcode.image import read_qrcode_image
+
+with open("task_qr.png", "rb") as f:
+    image_bytes = f.read()
+
+# Returns a list of all QR code texts found in the image
+texts = read_qrcode_image(image_bytes)
+for text in texts:
+    print(text[:40])
+```
+
+## Polyline Coordinate Encoding
+
+The QR format represents all turnpoint coordinates using a compact polyline encoding — the same algorithm Google Maps uses, extended to cover altitude and radius. Each turnpoint's `z` field in the compact JSON encodes up to four integers: longitude × 10⁵, latitude × 10⁵, altitude (metres), and radius (metres).
+
+- **Competition format (`XCTSK:`)**: `z` encodes four numbers — lon, lat, alt, radius.
+- **XC/Waypoints format**: `z` encodes three numbers — lon, lat, alt (no radius; these tasks have no cylinders).
+
+The encoding is lossy at approximately 0.8 m precision, which is well within the FAI 5 m tolerance for task coordinates.
+
+```python
+from pyxctsk.qrcode.encoding import (
+    encode_competition_turnpoint,
+    encode_waypoint_turnpoint,
+    decode_nums,
+)
+
+# Encode a competition turnpoint: lon, lat, alt_m, radius_m
+z = encode_competition_turnpoint(lon=8.0, lat=46.5, alt=1000, radius=400)
+print(z)   # compact polyline string
+
+# Decode back to integers (scaled by 1e5 for lon/lat)
+nums = decode_nums(z)
+lon = nums[0] / 1e5
+lat = nums[1] / 1e5
+alt = nums[2]
+radius = nums[3]
+
+# XC/Waypoints (no radius)
+z_wp = encode_waypoint_turnpoint(lon=8.0, lat=46.5, alt=1000)
+```
+
+## Complete Round-Trip Example
+
+<Steps>
+
+### Load the task
+
+```python
+from pyxctsk import load_task
+
+task = load_task("task.xctsk")
+```
+
+### Convert to a QR string
+
+```python
+# Use compressed encoding for better QR density
+qr_string = task.to_qr_code_task().to_string(compressed=True)
+```
+
+### Render as a PNG image (requires [qr])
+
+```python
+from pyxctsk.qrcode.image import generate_qrcode_image
+
+image = generate_qrcode_image(qr_string, size=1024)
+image.save("task_qr.png")
+```
+
+### Read the image back
+
+```python
+from pyxctsk import load_task
+
+recovered_task = load_task("task_qr.png")
+print(recovered_task.task_type)
+print(len(recovered_task.turnpoints))
+```
+
+</Steps>
+
+<Tip>
+All 25 reference tasks generated by tools.xcontest.org round-trip byte-identically through pyxctsk's QR encoder and decoder. The polyline lossy compression is applied consistently, so the encoded coordinates are always the same for the same input values.
+</Tip>

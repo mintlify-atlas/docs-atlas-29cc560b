@@ -1,0 +1,452 @@
+---
+title: "DistanceReport: FAI S7F Distance Report as a Value"
+sidebarTitle: "DistanceReport"
+description: "DistanceReport packages the FAI S7F §7.2 task distances into a structured value with as_dict() for machine comparison and as_text() for human reading."
+---
+
+`DistanceReport` is the surface another implementation diffs against: it packages every number pyxctsk publishes about one task — the two distances FAI Sporting Code S7F §7.2 defines, the "distance through centres" it does *not* define, every reading of that number, and the optimized crossing point per turnpoint. It has two renderings: `as_dict()` for machine comparison and `as_text()` for a human. Both read the same underlying fields, so they cannot disagree about a number or its absence.
+
+<Note>
+  "Distance through centres" is **not defined by S7F 2026**. §7.2 defines the optimized task distance and the speed section distance; "through centres" appears nowhere in the specification. pyxctsk publishes one stated convention (`PROPOSED_READING`) and keeps the alternatives so a vendor whose board disagrees can tell a convention difference from a bug. See `NOTES` and the `center_distance_readings_m` key.
+</Note>
+
+---
+
+## Quick Start
+
+```python
+from pyxctsk import load_task, DistanceReport
+
+task = load_task("task.xctsk")
+report = DistanceReport.from_task(task)
+
+# Human-readable text
+print(report.as_text())
+
+# Machine-readable dict (JSON-serializable)
+import json
+print(json.dumps(report.as_dict(), indent=2))
+
+# Direct property access
+print(f"Task distance:    {report.task_distance_m / 1000:.3f} km")
+print(f"Speed section:    {report.speed_section_distance_m}")  # None if no SSS/ESS
+print(f"Through centres:  {report.center_distance_m / 1000:.3f} km")
+
+# Per-turnpoint optimized crossing points
+for row in report.route():
+    print(f"  {row.index:2d} {row.name:<10} r={row.radius_m:>6} m"
+          f"  route=({row.route_lat:.5f}, {row.route_lon:.5f})"
+          f"  {row.cumulative_m / 1000:.3f} km")
+```
+
+---
+
+## Building a DistanceReport
+
+### `DistanceReport.from_task(task)`
+
+Measure a task and build its report. Runs the optimizer once; the result is frozen into the returned `DistanceReport`.
+
+```python
+from pyxctsk import load_task, DistanceReport
+
+report = DistanceReport.from_task(load_task("task.xctsk"))
+```
+
+<ParamField path="task" type="Task" required>
+  The task to measure.
+</ParamField>
+
+Raises `TooFewTurnpointsError` if the task has fewer than two turnpoints. Raises `UnmeasurableRouteError` if the task's local plane cannot represent the route.
+
+### `DistanceReport.from_measured_task(measured)`
+
+Build the report for an already-optimized `MeasuredTask`. Use this when you hold a measured task from another pipeline step (e.g. a drawing) and want to avoid optimizing again.
+
+```python
+from pyxctsk import load_task, MeasuredTask, DistanceReport
+
+measured = MeasuredTask.from_task(load_task("task.xctsk"))
+report = DistanceReport.from_measured_task(measured)
+```
+
+<ParamField path="measured" type="MeasuredTask" required>
+  The task and the route measured for it.
+</ParamField>
+
+Raises `TooFewTurnpointsError` if the task has fewer than two turnpoints.
+
+### Constructor `DistanceReport(measured=...)`
+
+The constructor is the common implementation behind the two class methods. Pass a `MeasuredTask`; the constructor checks the turnpoint count and refuses short tasks.
+
+```python
+from pyxctsk import MeasuredTask, DistanceReport, load_task
+
+measured = MeasuredTask.from_task(load_task("task.xctsk"))
+report = DistanceReport(measured=measured)
+```
+
+Raises `TooFewTurnpointsError` if `measured` has fewer than two turnpoints.
+
+---
+
+## Properties
+
+<ResponseField name="measured" type="MeasuredTask">
+  The task and the route measured for it. All other properties are projections of this value.
+</ResponseField>
+
+<ResponseField name="task" type="Task">
+  The task being reported on — `measured.task`.
+</ResponseField>
+
+<ResponseField name="earth_model" type="str">
+  The earth model the distances were measured on, as a string for output (e.g. `"WGS84 (default)"` or `"FAI_SPHERE"`). Read from the route, which is where the legs were actually measured.
+</ResponseField>
+
+<ResponseField name="task_distance_m" type="float">
+  S7F §7.2's task distance: the optimized path from launch to goal, in metres.
+</ResponseField>
+
+<ResponseField name="speed_section_distance_m" type="float | None">
+  S7F §7.2's speed section distance, in metres, or `None` if the task has no SSS/ESS pair. This is a **separate** `taskToESS` optimization — not a prefix of the task route. Check for `None` before dividing; roughly a third of real competition tasks have no speed section.
+</ResponseField>
+
+<ResponseField name="speed_section_to_ess_m" type="float | None">
+  The `taskToESS` optimization's total (launch to ESS), in metres, or `None`.
+</ResponseField>
+
+<ResponseField name="speed_section_pre_start_m" type="float | None">
+  How far along `taskToESS` the SSS sits, in metres, or `None`.
+</ResponseField>
+
+<ResponseField name="center_distance_m" type="float | None">
+  The "distance through centres" under `PROPOSED_READING` — the `LAUNCH_TO_GOAL` convention. **Not defined by S7F.** `None` for a task with fewer than two turnpoints.
+</ResponseField>
+
+<ResponseField name="center_distance_reading" type="str">
+  The name of the reading used for `center_distance_m` — always `"LAUNCH_TO_GOAL"`.
+</ResponseField>
+
+<ResponseField name="center_distance_readings_m" type="dict[str, float | None]">
+  Every reading of the centre distance, keyed by `CenterDistanceReading` value name. Use this to diagnose a disagreement with another implementation.
+</ResponseField>
+
+<ResponseField name="speed_section" type="SpeedSection | None">
+  The `SpeedSection` value (derived on first access). `None` when the task has no SSS/ESS pair.
+</ResponseField>
+
+---
+
+## `route() -> list[RouteRow]`
+
+One `RouteRow` per turnpoint, in task order. Each row carries the turnpoint's centre, its cylinder radius, the optimized crossing point, and the cumulative distance along both the optimized route and the through-centres polyline.
+
+```python
+for row in report.route():
+    print(
+        f"  {row.index:2d} {row.name:<10} {row.type:<8}"
+        f" r={row.radius_m:>6} m"
+        f"  centre=({row.center_lat:.5f}, {row.center_lon:.5f})"
+        f"  route=({row.route_lat:.5f}, {row.route_lon:.5f})"
+        f"  {row.cumulative_m / 1000:.3f} km"
+    )
+```
+
+<Tip>
+  Exchange the `route_lat`/`route_lon` columns — not just the totals — when comparing two implementations. A total says they disagree; the crossing points say *where*.
+</Tip>
+
+### RouteRow
+
+<ResponseField name="index" type="int">
+  Position in the task, from 0.
+</ResponseField>
+
+<ResponseField name="name" type="str">
+  The waypoint's name.
+</ResponseField>
+
+<ResponseField name="type" type="str">
+  The turnpoint's role (`"TAKEOFF"`, `"SSS"`, `"ESS"`, etc.), or `""` for an ordinary turnpoint.
+</ResponseField>
+
+<ResponseField name="radius_m" type="int">
+  Cylinder radius in metres.
+</ResponseField>
+
+<ResponseField name="center_lat" type="float">
+  Latitude of the turnpoint centre.
+</ResponseField>
+
+<ResponseField name="center_lon" type="float">
+  Longitude of the turnpoint centre.
+</ResponseField>
+
+<ResponseField name="route_lat" type="float">
+  Latitude where the optimized route crosses this turnpoint's cylinder boundary.
+</ResponseField>
+
+<ResponseField name="route_lon" type="float">
+  Longitude where the optimized route crosses this turnpoint's cylinder boundary.
+</ResponseField>
+
+<ResponseField name="cumulative_m" type="float">
+  Distance along the optimized route to this turnpoint, in metres. A prefix of `task_distance_m` by construction — read from the route's own legs, never re-optimized.
+</ResponseField>
+
+<ResponseField name="cumulative_center_m" type="float">
+  Distance through centres to this turnpoint, in metres. The last entry equals `center_distance_m`.
+</ResponseField>
+
+---
+
+## `as_dict() -> dict`
+
+The JSON surface another implementation diffs against. Returns a fully JSON-serializable dictionary. The key names and the `notes` block are part of the published interface.
+
+```python
+import json
+from pyxctsk import load_task, DistanceReport
+
+report = DistanceReport.from_task(load_task("task.xctsk"))
+print(json.dumps(report.as_dict(), indent=2))
+```
+
+<Expandable title="Full JSON output example">
+
+```json
+{
+  "pyxctsk_version": "0.7.0",
+  "s7f_edition": "2026 V1.0",
+  "earth_model": "WGS84 (default)",
+  "task_distance_m": 92002.4,
+  "speed_section_distance_m": 86761.2,
+  "speed_section_to_ess_m": 89500.8,
+  "speed_section_pre_start_m": 2739.6,
+  "center_distance_m": 321440.3,
+  "center_distance_reading": "LAUNCH_TO_GOAL",
+  "center_distance_readings_m": {
+    "LAUNCH_TO_GOAL": 321440.3,
+    "LAUNCH_TO_GOAL_BOUNDARY": 321240.3,
+    "START_TO_GOAL": 281568.1
+  },
+  "route": [
+    {
+      "index": 0,
+      "name": "D01",
+      "type": "TAKEOFF",
+      "radius_m": 0,
+      "center_lat": 4.476050,
+      "center_lon": -76.153519,
+      "route_lat": 4.476050,
+      "route_lon": -76.153519,
+      "cumulative_m": 0.0,
+      "cumulative_center_m": 0.0
+    },
+    {
+      "index": 1,
+      "name": "X09",
+      "type": "SSS",
+      "radius_m": 37000,
+      "center_lat": 4.502847,
+      "center_lon": -76.137677,
+      "route_lat": 4.469712,
+      "route_lon": -76.140881,
+      "cumulative_m": 3446.1,
+      "cumulative_center_m": 3041.8
+    },
+    {
+      "index": 8,
+      "name": "G02",
+      "type": "",
+      "radius_m": 200,
+      "center_lat": 4.589699,
+      "center_lon": -75.967881,
+      "route_lat": 4.589552,
+      "route_lon": -75.968044,
+      "cumulative_m": 92002.4,
+      "cumulative_center_m": 321440.3
+    }
+  ],
+  "notes": {
+    "task_distance_m": "FAI S7F 2026 §7.2, optimized launch to goal",
+    "speed_section_distance_m": "FAI S7F 2026 §7.2, a separate launch-to-ESS optimization minus its pre-start portion; null when the task has no SSS/ESS pair",
+    "center_distance_m": "NOT DEFINED BY S7F. A task-board convention; this is the reading pyxctsk proposes. See center_distance_readings_m for the alternatives and docs/s7f-distance-reference.md for why they differ by up to 39.9 km",
+    "route": "The optimized crossing point per turnpoint. Exchange these rather than totals: a total says two implementations disagree, these say where. cumulative_center_m is the prefix of the center_distance_m reading above, so its last row equals it"
+  }
+}
+```
+
+</Expandable>
+
+### `as_dict()` key reference
+
+<ResponseField name="pyxctsk_version" type="string">
+  The library version that produced this report.
+</ResponseField>
+
+<ResponseField name="s7f_edition" type="string">
+  The S7F edition the calculations are audited against — always `S7F_EDITION` (`"2026 V1.0"`).
+</ResponseField>
+
+<ResponseField name="earth_model" type="string">
+  The earth model the distances were measured on, as a human-readable string.
+</ResponseField>
+
+<ResponseField name="task_distance_m" type="number">
+  S7F §7.2's optimized launch-to-goal distance, in metres.
+</ResponseField>
+
+<ResponseField name="speed_section_distance_m" type="number | null">
+  S7F §7.2's speed section distance, in metres. `null` when the task has no SSS/ESS pair.
+</ResponseField>
+
+<ResponseField name="speed_section_to_ess_m" type="number | null">
+  The `taskToESS` total, in metres, or `null`.
+</ResponseField>
+
+<ResponseField name="speed_section_pre_start_m" type="number | null">
+  Distance from launch to the SSS along `taskToESS`, in metres, or `null`.
+</ResponseField>
+
+<ResponseField name="center_distance_m" type="number | null">
+  Distance through centres under `PROPOSED_READING`, in metres. Not defined by S7F.
+</ResponseField>
+
+<ResponseField name="center_distance_reading" type="string">
+  The reading name used for `center_distance_m` — always `"LAUNCH_TO_GOAL"`.
+</ResponseField>
+
+<ResponseField name="center_distance_readings_m" type="object">
+  All three readings of the centre distance — `LAUNCH_TO_GOAL`, `LAUNCH_TO_GOAL_BOUNDARY`, `START_TO_GOAL` — each in metres or `null` where it does not apply.
+</ResponseField>
+
+<ResponseField name="route" type="array">
+  List of route row objects, one per turnpoint. Each has `index`, `name`, `type`, `radius_m`, `center_lat`, `center_lon`, `route_lat`, `route_lon`, `cumulative_m`, `cumulative_center_m`. See [RouteRow](#routerow).
+</ResponseField>
+
+<ResponseField name="notes" type="object">
+  The `NOTES` dict — a block explaining what each published number is and whether S7F defines it. Carried with the report so the provenance always travels with the data.
+</ResponseField>
+
+---
+
+## `as_text() -> str`
+
+Human-readable rendering of the report — the same output as `pyxctsk distances task.xctsk --format text`.
+
+```python
+print(report.as_text())
+```
+
+Example output:
+
+```text
+pyxctsk 0.7.0  |  FAI S7F 2026 V1.0  |  earth model: WGS84 (default)
+
+  task distance (§7.2)            92.002 km
+  speed section (§7.2)            86.761 km
+  through centres                321.440 km   [LAUNCH_TO_GOAL]
+
+  'through centres' is NOT defined by S7F. Other readings of it:
+    LAUNCH_TO_GOAL                 321.440 km
+    LAUNCH_TO_GOAL_BOUNDARY        321.240 km
+    START_TO_GOAL                  281.568 km
+
+  optimized route:
+     0 D01        TAKEOFF  r=     0 m    4.476050  -76.153519     0.000 km
+     1 X09        SSS      r= 37000 m    4.469712  -76.140881     3.446 km
+     8 G02                 r=   200 m    4.589552  -75.968044    92.002 km
+```
+
+---
+
+## Constants
+
+### `S7F_EDITION`
+
+```python
+from pyxctsk import S7F_EDITION
+print(S7F_EDITION)   # "2026 V1.0"
+```
+
+The S7F edition the distance calculations are audited against. Appears in every `as_dict()` output and every `as_text()` header so that a stored report is self-describing.
+
+### `NOTES`
+
+```python
+from pyxctsk import NOTES
+```
+
+A dictionary explaining what each published number is and whether S7F defines it. Included verbatim in every `as_dict()` output under the `"notes"` key. The `center_distance_m` note explicitly states *"NOT DEFINED BY S7F"* — this is the single most important thing it says, and a number without it invites a false comparison.
+
+<Expandable title="NOTES dictionary contents">
+
+```python
+NOTES = {
+    "task_distance_m": "FAI S7F 2026 §7.2, optimized launch to goal",
+    "speed_section_distance_m": (
+        "FAI S7F 2026 §7.2, a separate launch-to-ESS optimization minus "
+        "its pre-start portion; null when the task has no SSS/ESS pair"
+    ),
+    "center_distance_m": (
+        "NOT DEFINED BY S7F. A task-board convention; this is the "
+        "reading pyxctsk proposes. See center_distance_readings_m for "
+        "the alternatives and docs/s7f-distance-reference.md for why "
+        "they differ by up to 39.9 km"
+    ),
+    "route": (
+        "The optimized crossing point per turnpoint. Exchange these "
+        "rather than totals: a total says two implementations disagree, "
+        "these say where. cumulative_center_m is the prefix of the "
+        "center_distance_m reading above, so its last row equals it"
+    ),
+}
+```
+
+</Expandable>
+
+---
+
+## TooFewTurnpointsError
+
+```python
+from pyxctsk import TooFewTurnpointsError
+```
+
+Raised when a `DistanceReport` is constructed for a task with fewer than two turnpoints. A single turnpoint has no leg and therefore no distance; pyxctsk refuses to report `0.0` and say nothing.
+
+```python
+from pyxctsk import load_task, DistanceReport, TooFewTurnpointsError
+
+try:
+    report = DistanceReport.from_task(load_task("task.xctsk"))
+except TooFewTurnpointsError as exc:
+    print(f"Cannot produce a distance report: {exc}")
+```
+
+All three construction paths (`from_task`, `from_measured_task`, the constructor) check the turnpoint count and raise `TooFewTurnpointsError` uniformly.
+
+---
+
+## Comparing Implementations
+
+`as_dict()` is designed to be the exchange format between two implementations. The workflow:
+
+1. Both implementations run `pyxctsk distances task.xctsk` (or the Python equivalent) and write the JSON output.
+2. Diff the two JSON files — or compare programmatically.
+3. If `task_distance_m` differs, look at the `route` array: find the first `route_lat`/`route_lon` that diverges. That is the turnpoint where the two optimizers chose differently.
+4. If `center_distance_m` differs, check `center_distance_readings_m`: if your board's value appears in one of the three readings, the cause is a convention difference. If it matches none of them, the cause is a bug.
+
+```bash
+# Generate JSON for two tasks and diff them
+pyxctsk distances task_a.xctsk > report_a.json
+pyxctsk distances task_b.xctsk > report_b.json
+diff report_a.json report_b.json
+```
+
+<Warning>
+  Do not compare `center_distance_m` totals between implementations without first checking `center_distance_readings_m`. Three defensible readings sit **39.9 km apart** on the reference corpus's widest case — far more than any optimizer difference. Matching on the total while using different readings is coincidence, not agreement.
+</Warning>

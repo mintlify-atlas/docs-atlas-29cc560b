@@ -1,47 +1,350 @@
 ---
-title: "Quickstart"
-description: "Begin with a guide on the fastest path to a successful outcome"
+title: "Get Started with pyxctsk"
+sidebarTitle: "Quickstart"
+description: "Learn how to install pyxctsk, parse an XCTrack task file, build a task from scratch, and report FAI S7F distances in under five minutes."
 ---
 
-Describe how someone begins using your product. What is the first thing they need to do? Are there any prerequisites?
-
-A quickstart should take someone from zero to using your product. They'll get a quick win and a sense of what they can accomplish.
-
-## Prerequisites
-
-Before you begin, you must have:
-
-- Requirement one (for example, Node.js 18+, a free account, an API key)
-- Requirement two (for example, a compatible device, a compatible browser, a compatible operating system)
-
-## Get started
+pyxctsk is available on PyPI and works with Python 3.11 and later. This guide walks you through installing the library, reading a task file, exploring the data model, building a task from scratch, calculating FAI S7F distances, and converting a task to other formats. All code examples use only names that are exported from the top-level `pyxctsk` package.
 
 <Steps>
-  <Step title="Install">
-    Describe how to install your product or sign up.
 
-    ```bash
-    npm install your-package
-    ```
-  </Step>
-  <Step title="Configure">
-    Describe any setup or configuration needed before first use.
+<Step title="Install pyxctsk">
 
-    ```bash
-    your-cli init
-    ```
-  </Step>
-  <Step title="Run it">
-    Show the first thing a user does to see it working.
+Install the core library and CLI with pip:
 
-    ```bash
-    your-cli start
-    ```
-  </Step>
+```bash
+pip install pyxctsk
+```
+
+If you need to render QR code images to PNG or read a task from a QR image file, install the `[qr]` extra as well:
+
+```bash
+pip install "pyxctsk[qr]"
+```
+
+Verify the install worked:
+
+```bash
+pyxctsk --version
+```
+
+<Note>
+  The `XCTSK:` and `XCTSKZ:` compact string formats do **not** require the `[qr]` extra — only rendering a PNG image or reading a task back from a QR image file does. All other capabilities, including FAI S7F distance calculations and format conversions, work with the core install.
+</Note>
+
+</Step>
+
+<Step title="Parse a task file">
+
+Use `load_task()` to read a task from a file path. It accepts `.xctsk` files, text files holding an `XCTSK:`/`XCTSKZ:` string, or QR code image files — detected by content, not extension:
+
+```python
+from pyxctsk import load_task
+
+task = load_task("task.xctsk")
+print(task)
+```
+
+Use `parse_task()` when you already have the payload in memory as a string or bytes. Unlike `load_task()`, it never touches the filesystem:
+
+```python
+from pyxctsk import parse_task
+
+# From a JSON string (the .xctsk file contents)
+with open("task.xctsk", encoding="utf-8") as f:
+    task = parse_task(f.read())
+
+# From an XCTSK: URL string
+task = parse_task("XCTSK:{...}")
+
+# From QR code image bytes (requires pyxctsk[qr])
+task = parse_task(open("qr.png", "rb").read())
+```
+
+Both functions return a `Task` object and accept the same formats: full-format JSON, `XCTSK:` URL, `XCTSKZ:` compressed URL, or QR code image bytes.
+
+</Step>
+
+<Step title="Explore the task model">
+
+A `Task` is a plain dataclass. Inspect its fields directly:
+
+```python
+from pyxctsk import load_task
+
+task = load_task("task.xctsk")
+
+# Top-level task fields
+print(f"Task type:   {task.task_type}")        # e.g. TaskType.CLASSIC
+print(f"Version:     {task.version}")
+print(f"Turnpoints:  {len(task.turnpoints)}")
+print(f"Earth model: {task.earth_model}")
+
+# Iterate over turnpoints
+for i, tp in enumerate(task.turnpoints):
+    wp = tp.waypoint
+    print(
+        f"  {i:2d}  {wp.name:<12}  lat={wp.lat:.5f}  lon={wp.lon:.5f}"
+        f"  alt={wp.alt_smoothed} m  r={tp.radius} m  type={tp.type}"
+    )
+
+# Speed section and goal
+if task.sss:
+    print(f"SSS type:    {task.sss.type}")
+    print(f"Time gates:  {task.sss.time_gates}")
+if task.goal:
+    print(f"Goal type:   {task.goal.type}")
+
+# Effective goal applies the spec's CYLINDER default when goal is absent
+effective = task.effective_goal
+print(f"Effective goal type: {effective.type if effective else 'none'}")
+```
+
+Key `Task` fields:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `task_type` | `TaskType` | `CLASSIC` or `RACE_TO_GOAL` (enum) |
+| `version` | `int` | Task format version |
+| `turnpoints` | `list[Turnpoint]` | Ordered list of turnpoints |
+| `earth_model` | `EarthModel \| None` | `WGS84` or `FAI_SPHERE` |
+| `sss` | `SSS \| None` | Start of speed section with time gates |
+| `goal` | `Goal \| None` | Goal type and deadline |
+
+Key `Turnpoint` fields:
+
+| Field | Type | Description |
+|-------|------|-------------|
+| `radius` | `int` | Cylinder radius in metres |
+| `waypoint` | `Waypoint` | Position (name, lat, lon, alt\_smoothed) |
+| `type` | `TurnpointType \| None` | `TAKEOFF`, `SSS`, `ESS`, or `None` |
+
+</Step>
+
+<Step title="Create a task from scratch">
+
+All model classes are plain dataclasses — construct them directly. Import everything you need from `pyxctsk`:
+
+```python
+from pyxctsk import (
+    Task,
+    TaskType,
+    Turnpoint,
+    TurnpointType,
+    Waypoint,
+    SSS,
+    SSSType,
+    Direction,
+    Goal,
+    GoalType,
+    EarthModel,
+)
+from pyxctsk import TimeOfDay
+
+task = Task(
+    task_type=TaskType.CLASSIC,
+    version=1,
+    earth_model=EarthModel.WGS84,
+    turnpoints=[
+        Turnpoint(
+            radius=400,
+            waypoint=Waypoint(
+                name="D01",
+                lat=46.5194,
+                lon=8.0341,
+                alt_smoothed=2050,
+            ),
+            type=TurnpointType.TAKEOFF,
+        ),
+        Turnpoint(
+            radius=3000,
+            waypoint=Waypoint(
+                name="B01",
+                lat=46.6200,
+                lon=8.1000,
+                alt_smoothed=1800,
+            ),
+            type=TurnpointType.SSS,
+        ),
+        Turnpoint(
+            radius=1000,
+            waypoint=Waypoint(
+                name="TP1",
+                lat=46.7500,
+                lon=8.2500,
+                alt_smoothed=1600,
+            ),
+        ),
+        Turnpoint(
+            radius=2000,
+            waypoint=Waypoint(
+                name="GL",
+                lat=46.8300,
+                lon=8.1800,
+                alt_smoothed=1200,
+            ),
+            type=TurnpointType.ESS,
+        ),
+    ],
+    sss=SSS(
+        type=SSSType.RACE,
+        direction=Direction.ENTER,
+        time_gates=[TimeOfDay(12, 30, 0)],
+    ),
+    goal=Goal(
+        type=GoalType.LINE,
+        deadline=TimeOfDay(19, 0, 0),
+    ),
+)
+
+# Serialize back to an .xctsk file
+with open("my_task.xctsk", "w", encoding="utf-8") as f:
+    f.write(task.to_json())
+```
+
+</Step>
+
+<Step title="Validate a task">
+
+`Task.validate()` checks the spec's structural rules and returns a list of `ValidationIssue` objects — an empty list means the task is valid:
+
+```python
+from pyxctsk import load_task
+
+task = load_task("task.xctsk")
+issues = task.validate()
+
+if issues:
+    for issue in issues:
+        print(f"  [{issue.rule.name}] {issue}")
+else:
+    print("Task is structurally valid.")
+```
+
+Pass `strict=True` to `load_task()` or `parse_task()` to turn any structural violation into a `TaskValidationError` at parse time rather than returning the task silently:
+
+```python
+from pyxctsk import load_task, TaskValidationError
+
+try:
+    task = load_task("task.xctsk", strict=True)
+except TaskValidationError as exc:
+    print(f"Task is invalid: {exc}")
+```
+
+<Note>
+  `strict=True` only rejects tasks that break the spec's **structural** rules (e.g. TAKEOFF not first, missing SSS/ESS). A value of the wrong kind — a boolean latitude, a coordinate off the earth — is always refused regardless of `strict`.
+</Note>
+
+</Step>
+
+<Step title="Calculate FAI S7F distances">
+
+`DistanceReport.from_task()` computes both distances that FAI Sporting Code S7F §7.2 defines (the optimized task distance and the speed section distance), plus every reading of the conventional "distance through centres":
+
+```python
+from pyxctsk import load_task, DistanceReport
+
+task = load_task("task.xctsk")
+report = DistanceReport.from_task(task)
+
+# Human-readable text output
+print(report.as_text())
+```
+
+Example output:
+
+```text
+pyxctsk 0.7.0  |  FAI S7F 2026 V1.0  |  earth model: WGS84
+
+  task distance (§7.2)            92.002 km
+  speed section (§7.2)            86.761 km
+  through centres                321.440 km   [LAUNCH_TO_GOAL]
+```
+
+For machine-readable output — useful for diffing against another implementation — use `.as_dict()`:
+
+```python
+import json
+
+data = report.as_dict()
+print(json.dumps(data, indent=2))
+# Keys: pyxctsk_version, s7f_edition, earth_model,
+#       task_distance_m, speed_section_distance_m,
+#       center_distance_m, center_distance_readings_m,
+#       route (per-turnpoint optimized crossing points), notes
+```
+
+Access individual values directly as properties:
+
+```python
+print(f"Task distance:          {report.task_distance_m / 1000:.3f} km")
+print(f"Speed section distance: {report.speed_section_distance_m / 1000:.3f} km")
+print(f"Through centres:        {report.center_distance_m / 1000:.3f} km")
+
+# Per-turnpoint optimized crossing points
+for row in report.route():
+    print(
+        f"  {row.index:2d} {row.name:<10} r={row.radius_m:>6} m"
+        f"  route=({row.route_lat:.5f}, {row.route_lon:.5f})"
+        f"  {row.cumulative_m / 1000:.3f} km"
+    )
+```
+
+</Step>
+
+<Step title="Convert to other formats">
+
+Use `render_task()` to write a task out in any supported format:
+
+```python
+from pyxctsk import load_task, render_task
+
+task = load_task("task.xctsk")
+
+# Full JSON (.xctsk)
+json_str = render_task(task, "json")
+
+# KML for mapping tools
+kml_str = render_task(task, "kml")
+with open("task.kml", "w", encoding="utf-8") as f:
+    f.write(kml_str)
+
+# GeoJSON FeatureCollection
+geojson_str = render_task(task, "geojson")
+
+# Compact XCTSK: QR URL string (no [qr] extra needed)
+qr_string = render_task(task, "qrcode-json")
+print(qr_string)  # XCTSK:{...}
+
+# Compressed XCTSKZ: variant
+qrz_string = render_task(task, "qrcode-json", compressed=True)
+
+# PNG QR code image (requires pyxctsk[qr])
+png_bytes = render_task(task, "png")
+with open("task_qr.png", "wb") as f:
+    f.write(png_bytes)
+```
+
+The same conversions are available from the CLI:
+
+```bash
+pyxctsk convert task.xctsk --format json
+pyxctsk convert task.xctsk --format kml -o task.kml
+pyxctsk convert task.xctsk --format geojson -o task.geojson
+pyxctsk convert task.xctsk --format qrcode-json
+pyxctsk convert task.xctsk --format png -o qr.png
+pyxctsk convert task.xctsk --format png --compressed -o qr_z.png   # XCTSKZ:
+
+# Also accepts XCTSK: strings and QR images as input
+pyxctsk convert qr_code.png --format json
+cat task.xctsk | pyxctsk convert --format kml
+
+# Distance report
+pyxctsk distances task.xctsk --format text
+pyxctsk distances task.xctsk              # JSON with per-turnpoint route points
+```
+
+</Step>
+
 </Steps>
-
-<Tip>
-  Give people a way to get help. This could be a link to a support page, a chat with a customer support agent, or a forum for your product.
-
-  Example: Need help? Reach out to us at [support@yourcompany.com](mailto:support@yourcompany.com).
-</Tip>
